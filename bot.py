@@ -2,11 +2,11 @@ from aiogram import Bot, Dispatcher
 from aiogram.filters import Command
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove, Message
 from config import BOT_TOKEN
-from database import save_user, get_user, save_log, save_mood_request, mark_request_as_answered, get_unanswered_requests
+from database import save_user, save_log, get_last_event
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import asyncio
 import pytz
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 # Создаём бота
 bot = Bot(token=BOT_TOKEN)
@@ -50,60 +50,56 @@ async def handle_timezone_selection(message: Message):
     timezone = f"Etc/GMT{gmt_offset:+d}"  # Конвертируем в формат таймзоны
     save_user(message.from_user.id, timezone)  # Сохраняем таймзону в базу
 
-    # Удаляем задачу, если она уже существует, чтобы избежать дублирования
-    job_id = f"mood_request_{message.from_user.id}"
-    scheduler.remove_job(job_id) if scheduler.get_job(job_id) else None
-
-    # Планируем новую задачу с учётом таймзоны
-    scheduler.add_job(
-        send_mood_request,
-        "interval",
-        hours=2,  # Запрашиваем настроение каждые 2 часа
-        args=[message.from_user.id],
-        id=job_id,
-        timezone=pytz.timezone(timezone),
-    )
-
     await message.answer(
-        f"Таймзона {message.text} успешно сохранена! Теперь я буду спрашивать твоё настроение каждые 2 часа.",
-        reply_markup=mood_keyboard,  # Показать клавиатуру для настроения
+        f"Таймзона {message.text} успешно сохранена! Теперь я буду спрашивать твоё настроение каждые 2 минуты.",
+        reply_markup=mood_keyboard,
     )
+
+    # Отправляем первый запрос
+    await send_mood_request(message.from_user.id)
 
 async def send_mood_request(user_id):
     """Отправляет запрос о настроении пользователю и планирует проверку ответа."""
-    try:
-        # Сохраняем новый запрос настроения в базу данных
-        request_time = datetime.utcnow()
-        save_mood_request(user_id)
+    utc_now = datetime.now(timezone.utc)
 
-        # Отправляем сообщение пользователю
-        await bot.send_message(
-            user_id,
-            "Как ты себя чувствуешь?\n"
-            "😊 Отлично   🙂 Хорошо\n"
-            "😐 Нормально 😟 Плохо",
-            reply_markup=mood_keyboard,
-        )
+    # Сохраняем событие `response` в логи
+    save_log(user_id, "response", utc_now)
 
-        # Планируем проверку ответа через 1 минуту
-        scheduler.add_job(
-            check_for_response,
-            "date",
-            run_date=request_time + timedelta(minutes=1),
-            args=[user_id, request_time],
-            id=f"check_response_{user_id}_{request_time.timestamp()}",
-        )
-    except Exception as e:
-        print(f"Ошибка при отправке сообщения: {e}")
+    # Отправляем сообщение пользователю
+    await bot.send_message(
+        user_id,
+        "Как ты себя чувствуешь?\n"
+        "😊 Отлично   🙂 Хорошо\n"
+        "😐 Нормально 😟 Плохо",
+        reply_markup=mood_keyboard,
+    )
 
-async def check_for_response(user_id, request_time):
+    # Планируем проверку ответа через 1 минуту
+    scheduler.add_job(
+        check_for_response,
+        "date",
+        run_date=utc_now + timedelta(minutes=1),
+        args=[user_id],
+        id=f"check_response_{user_id}",
+        misfire_grace_time=120,
+    )
+
+async def check_for_response(user_id):
     """Проверяет, ответил ли пользователь на запрос."""
-    unanswered_requests = get_unanswered_requests(user_id)
-    for req in unanswered_requests:
-        if req.request_time == request_time:
-            # Если ответа нет, отправляем напоминание (но не дублируем запросы настроения)
+    last_event = get_last_event(user_id)
+
+    # Если последнее событие — `response` и ответа нет, отправляем напоминание
+    if last_event and last_event.event_type == "response":
+        time_since_response = datetime.now(timezone.utc) - last_event.timestamp.replace(tzinfo=timezone.utc)
+
+        if time_since_response >= timedelta(minutes=1):
+            # Отправляем уведомление
             await bot.send_message(user_id, "Нельзя пропускать сбор данных!")
-            break  # Уведомление отправляется только один раз
+
+            # Сохраняем событие `notification` в логи
+            save_log(user_id, "notification", datetime.now(timezone.utc))
+
+            # Ожидание ответа продолжается, новый запрос не отправляется
 
 # Обработчик выбора настроения
 @dp.message(lambda msg: msg.text in ["😊 Отлично", "🙂 Хорошо", "😐 Нормально", "😟 Плохо"])
@@ -116,20 +112,25 @@ async def handle_mood(message: Message):
         "😟 Плохо": "Плохо",
     }
     mood = mood_map[message.text]
+    utc_now = datetime.now(timezone.utc)
 
-    # Отмечаем последний запрос настроения как отвеченный
-    mark_request_as_answered(message.from_user.id)
+    # Сохраняем событие `answer` в логи
+    save_log(message.from_user.id, "answer", utc_now, details=mood)
 
-    # Сохраняем лог с временем ответа
-    save_log(message.from_user.id, mood, datetime.utcnow(), datetime.utcnow())
-
-    # Переносим следующий запрос на 2 часа после ответа
-    job_id = f"mood_request_{message.from_user.id}"
-    scheduler.reschedule_job(job_id, trigger="date", run_date=datetime.utcnow() + timedelta(hours=2))
+    # Запускаем следующий запрос через 2 минуты
+    scheduler.add_job(
+        send_mood_request,
+        "date",
+        run_date=utc_now + timedelta(minutes=2),
+        args=[message.from_user.id],
+        id=f"mood_request_{message.from_user.id}",
+        replace_existing=True,
+        misfire_grace_time=120,
+    )
 
     await message.answer(
         f"Спасибо! Я записал: {mood}",
-        reply_markup=ReplyKeyboardRemove()  # Убираем клавиатуру
+        reply_markup=ReplyKeyboardRemove()
     )
 
 # Запуск планировщика и бота
