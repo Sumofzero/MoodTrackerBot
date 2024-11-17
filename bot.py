@@ -85,11 +85,11 @@ async def send_mood_request(user_id):
             reply_markup=mood_keyboard,
         )
 
-        # Планируем проверку ответа через 1 минуту
+        # Планируем проверку ответа через 5 минуту
         scheduler.add_job(
             check_for_response,
             "date",
-            run_date=request_time + timedelta(minutes=1),
+            run_date=request_time + timedelta(minutes=5),
             args=[user_id, request_time],
             id=f"check_response_{user_id}_{request_time.timestamp()}",
         )
