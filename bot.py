@@ -24,11 +24,16 @@ timezone_keyboard = ReplyKeyboardMarkup(
     resize_keyboard=True
 )
 
-# Клавиатура для выбора настроения (2x2)
+# Клавиатура для выбора настроения (5 кнопок в ряд)
 mood_keyboard = ReplyKeyboardMarkup(
     keyboard=[
-        [KeyboardButton(text="😊 Отлично"), KeyboardButton(text="🙂 Хорошо")],
-        [KeyboardButton(text="😐 Нормально"), KeyboardButton(text="😟 Плохо")],
+        [
+            KeyboardButton(text="😄 5"),  # Отличное настроение
+            KeyboardButton(text="😊 4"),  # Хорошее настроение
+            KeyboardButton(text="😐 3"),  # Нормальное настроение
+            KeyboardButton(text="😟 2"),  # Плохое настроение
+            KeyboardButton(text="😢 1"),  # Очень плохое настроение
+        ]
     ],
     resize_keyboard=True
 )
@@ -51,7 +56,7 @@ async def handle_timezone_selection(message: Message):
     save_user(message.from_user.id, timezone)  # Сохраняем таймзону в базу
 
     await message.answer(
-        f"Таймзона {message.text} успешно сохранена! Теперь я буду спрашивать твоё настроение каждые 2 минуты.",
+        f"Таймзона {message.text} успешно сохранена! Теперь я буду спрашивать твоё настроение каждый час.",
         reply_markup=mood_keyboard,
     )
 
@@ -68,20 +73,19 @@ async def send_mood_request(user_id):
     # Отправляем сообщение пользователю
     await bot.send_message(
         user_id,
-        "Как ты себя чувствуешь?\n"
-        "😊 Отлично   🙂 Хорошо\n"
-        "😐 Нормально 😟 Плохо",
+        "Как ты себя чувствуешь? Выбери оценку:\n"
+        "😄 5   😊 4   😐 3   😟 2   😢 1",
         reply_markup=mood_keyboard,
     )
 
-    # Планируем проверку ответа через 1 минуту
+    # Планируем проверку ответа через 5 минут
     scheduler.add_job(
         check_for_response,
         "date",
-        run_date=utc_now + timedelta(minutes=1),
+        run_date=utc_now + timedelta(minutes=5),
         args=[user_id],
         id=f"check_response_{user_id}",
-        misfire_grace_time=120,
+        misfire_grace_time=300,
     )
 
 async def check_for_response(user_id):
@@ -92,24 +96,24 @@ async def check_for_response(user_id):
     if last_event and last_event.event_type == "response":
         time_since_response = datetime.now(timezone.utc) - last_event.timestamp.replace(tzinfo=timezone.utc)
 
-        if time_since_response >= timedelta(minutes=1):
+        if time_since_response > timedelta(minutes=5):
             # Отправляем уведомление
             await bot.send_message(user_id, "Нельзя пропускать сбор данных!")
 
             # Сохраняем событие `notification` в логи
             save_log(user_id, "notification", datetime.now(timezone.utc))
 
-            # Ожидание ответа продолжается, новый запрос не отправляется
+            # Ждём ответа, следующий запрос не отправляем пока нет ответа
 
-# Обработчик выбора настроения
-@dp.message(lambda msg: msg.text in ["😊 Отлично", "🙂 Хорошо", "😐 Нормально", "😟 Плохо"])
+@dp.message(lambda msg: msg.text in ["😄 5", "😊 4", "😐 3", "😟 2", "😢 1"])
 async def handle_mood(message: Message):
     """Обрабатывает выбор настроения."""
     mood_map = {
-        "😊 Отлично": "Отлично",
-        "🙂 Хорошо": "Хорошо",
-        "😐 Нормально": "Нормально",
-        "😟 Плохо": "Плохо",
+        "😄 5": "Отличное",
+        "😊 4": "Хорошее",
+        "😐 3": "Нормальное",
+        "😟 2": "Плохое",
+        "😢 1": "Очень плохое",
     }
     mood = mood_map[message.text]
     utc_now = datetime.now(timezone.utc)
@@ -117,19 +121,19 @@ async def handle_mood(message: Message):
     # Сохраняем событие `answer` в логи
     save_log(message.from_user.id, "answer", utc_now, details=mood)
 
-    # Запускаем следующий запрос через 2 минуты
+    # Запускаем следующий запрос через 1 час
     scheduler.add_job(
         send_mood_request,
         "date",
-        run_date=utc_now + timedelta(minutes=2),
+        run_date=utc_now + timedelta(hours=1),
         args=[message.from_user.id],
         id=f"mood_request_{message.from_user.id}",
         replace_existing=True,
-        misfire_grace_time=120,
+        misfire_grace_time=3600,
     )
 
     await message.answer(
-        f"Спасибо! Я записал: {mood}",
+        f"Спасибо! Я записал твоё настроение как: {mood}",
         reply_markup=ReplyKeyboardRemove()
     )
 
