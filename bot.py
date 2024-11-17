@@ -58,14 +58,14 @@ async def handle_timezone_selection(message: Message):
     scheduler.add_job(
         send_mood_request,
         "interval",
-        minutes=5,
+        hours=2,  # Запрашиваем настроение каждые 2 часа
         args=[message.from_user.id],
         id=job_id,
         timezone=pytz.timezone(timezone),
     )
 
     await message.answer(
-        f"Таймзона {message.text} успешно сохранена! Теперь я буду спрашивать твоё настроение каждые 5 минут.",
+        f"Таймзона {message.text} успешно сохранена! Теперь я буду спрашивать твоё настроение каждые 2 часа.",
         reply_markup=mood_keyboard,  # Показать клавиатуру для настроения
     )
 
@@ -85,11 +85,11 @@ async def send_mood_request(user_id):
             reply_markup=mood_keyboard,
         )
 
-        # Планируем проверку ответа через 1 минуту
+        # Планируем проверку ответа через 5 минуту
         scheduler.add_job(
             check_for_response,
             "date",
-            run_date=request_time + timedelta(minutes=1),
+            run_date=request_time + timedelta(minutes=5),
             args=[user_id, request_time],
             id=f"check_response_{user_id}_{request_time.timestamp()}",
         )
@@ -101,8 +101,9 @@ async def check_for_response(user_id, request_time):
     unanswered_requests = get_unanswered_requests(user_id)
     for req in unanswered_requests:
         if req.request_time == request_time:
-            # Если ответа нет, отправляем напоминание
+            # Если ответа нет, отправляем напоминание (но не дублируем запросы настроения)
             await bot.send_message(user_id, "Нельзя пропускать сбор данных!")
+            break  # Уведомление отправляется только один раз
 
 # Обработчик выбора настроения
 @dp.message(lambda msg: msg.text in ["😊 Отлично", "🙂 Хорошо", "😐 Нормально", "😟 Плохо"])
@@ -121,6 +122,10 @@ async def handle_mood(message: Message):
 
     # Сохраняем лог с временем ответа
     save_log(message.from_user.id, mood, datetime.utcnow(), datetime.utcnow())
+
+    # Переносим следующий запрос на 2 часа после ответа
+    job_id = f"mood_request_{message.from_user.id}"
+    scheduler.reschedule_job(job_id, trigger="date", run_date=datetime.utcnow() + timedelta(hours=2))
 
     await message.answer(
         f"Спасибо! Я записал: {mood}",
