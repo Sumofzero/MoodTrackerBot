@@ -2,10 +2,17 @@ from sqlalchemy import create_engine, Column, Integer, String, DateTime, Foreign
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
 import datetime
+import os
+
+# Укажите путь к базе данных
+DB_PATH = os.path.join(os.getcwd(), "mood_tracker.db")
+
+# Убедитесь, что папка существует
+os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
 
 # Настройка базы данных
 Base = declarative_base()
-engine = create_engine("sqlite:///mood_tracker.db")  # База данных mood_tracker.db
+engine = create_engine(f"sqlite:///{DB_PATH}")  # База данных mood_tracker.db
 Session = sessionmaker(bind=engine)
 session = Session()
 
