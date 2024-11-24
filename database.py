@@ -5,7 +5,7 @@ import datetime
 import os
 
 # Укажите путь к базе данных
-DB_PATH = os.path.join(os.getcwd(), "mood_tracker.db")
+DB_PATH = "/MoodTrackerBot_data/mood_tracker.db"
 
 # Убедитесь, что папка существует
 os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
