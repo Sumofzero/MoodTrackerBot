@@ -2,10 +2,9 @@ from aiogram import Bot, Dispatcher
 from aiogram.filters import Command
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove, Message
 from config import BOT_TOKEN
-from database import save_user, save_log, get_last_event
+from database import save_user, save_log
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import asyncio
-import pytz
 from datetime import datetime, timedelta, timezone
 
 # Создаём бота
@@ -24,16 +23,51 @@ timezone_keyboard = ReplyKeyboardMarkup(
     resize_keyboard=True
 )
 
-# Клавиатура для выбора настроения (5 кнопок в ряд)
+# Клавиатура для выбора эмоционального состояния (10 кнопок в два ряда)
 mood_keyboard = ReplyKeyboardMarkup(
     keyboard=[
         [
-            KeyboardButton(text="😄 5"),  # Отличное настроение
-            KeyboardButton(text="😊 4"),  # Хорошее настроение
-            KeyboardButton(text="😐 3"),  # Нормальное настроение
-            KeyboardButton(text="😟 2"),  # Плохое настроение
-            KeyboardButton(text="😢 1"),  # Очень плохое настроение
+            KeyboardButton(text="😄 10"),  # Прекрасное
+            KeyboardButton(text="😊 9"),
+            KeyboardButton(text="🙂 8"),
+            KeyboardButton(text="😌 7"),
+            KeyboardButton(text="😐 6"),
+        ],
+        [
+            KeyboardButton(text="😕 5"),  # Среднее
+            KeyboardButton(text="😟 4"),
+            KeyboardButton(text="😢 3"),
+            KeyboardButton(text="😭 2"),
+            KeyboardButton(text="🤢 1"),  # Очень плохое
+        ],
+    ],
+    resize_keyboard=True
+)
+
+# Клавиатура для выбора физического состояния (5 кнопок в ряд)
+physical_state_keyboard = ReplyKeyboardMarkup(
+    keyboard=[
+        [
+            KeyboardButton(text="💪 5"),  # Отличное физическое состояние
+            KeyboardButton(text="🙂 4"),  # Хорошее физическое состояние
+            KeyboardButton(text="😐 3"),  # Нормальное физическое состояние
+            KeyboardButton(text="😟 2"),  # Плохое физическое состояние
+            KeyboardButton(text="🤢 1"),  # Очень плохое физическое состояние
         ]
+    ],
+    resize_keyboard=True
+)
+
+# Клавиатура для выбора текущей деятельности
+activity_keyboard = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="Работаю / Учусь")],
+        [KeyboardButton(text="Гуляю")],
+        [KeyboardButton(text="Занимаюсь спортом")],
+        [KeyboardButton(text="Отдыхаю / Смотрю видео")],
+        [KeyboardButton(text="Читаю статью / книгу")],
+        [KeyboardButton(text="Общаюсь с друзьями")],
+        [KeyboardButton(text="Другое")],
     ],
     resize_keyboard=True
 )
@@ -43,97 +77,138 @@ mood_keyboard = ReplyKeyboardMarkup(
 async def start_command(message: Message):
     """Приветствует пользователя и предлагает выбрать таймзону."""
     await message.answer(
-        "Привет! Я помогу отслеживать твоё настроение. Выбери свою таймзону:",
+        "Привет! Я помогу отслеживать твоё настроение и самочувствие. Выбери свою таймзону:",
         reply_markup=timezone_keyboard,
     )
 
 # Обработчик выбора таймзоны
 @dp.message(lambda msg: msg.text in timezones)
 async def handle_timezone_selection(message: Message):
-    """Сохраняет выбранную таймзону и запускает расписание запросов."""
+    """Сохраняет выбранную таймзону и запускает опросы."""
     gmt_offset = int(message.text.split(" ")[0])  # Извлекаем +1, +2 и т.д.
     timezone = f"Etc/GMT{gmt_offset:+d}"  # Конвертируем в формат таймзоны
     save_user(message.from_user.id, timezone)  # Сохраняем таймзону в базу
 
     await message.answer(
-        f"Таймзона {message.text} успешно сохранена! Теперь я буду спрашивать твоё настроение каждый час.",
-        reply_markup=mood_keyboard,
+        f"Таймзона {message.text} успешно сохранена! Теперь я буду спрашивать твоё состояние каждый час.",
+        reply_markup=ReplyKeyboardRemove()
     )
 
-    # Отправляем первый запрос
-    await send_mood_request(message.from_user.id)
+    # Запускаем запрос активности
+    await send_activity_request(message.from_user.id)
 
-async def send_mood_request(user_id):
-    """Отправляет запрос о настроении пользователю и планирует проверку ответа."""
+async def send_activity_request(user_id):
+    """Запрашивает текущую деятельность у пользователя."""
     utc_now = datetime.now(timezone.utc)
 
-    # Сохраняем событие `response` в логи
-    save_log(user_id, "response", utc_now)
+    # Сохраняем событие `response_activity` в логи
+    save_log(user_id, "response_activity", utc_now)
 
-    # Отправляем сообщение пользователю
     await bot.send_message(
         user_id,
-        "Как ты себя чувствуешь? Выбери оценку:\n"
-        "😄 5   😊 4   😐 3   😟 2   😢 1",
+        "Чем ты сейчас занят? Выбери подходящий вариант:",
+        reply_markup=activity_keyboard,
+    )
+
+@dp.message(lambda msg: msg.text in [
+    "Работаю / Учусь",
+    "Гуляю",
+    "Занимаюсь спортом",
+    "Отдыхаю / Смотрю видео",
+    "Читаю статью / книгу",
+    "Общаюсь с друзьями",
+    "Другое",
+])
+async def handle_activity(message: Message):
+    """Обрабатывает выбор текущей деятельности."""
+    activity = message.text
+    utc_now = datetime.now(timezone.utc)
+
+    # Сохраняем выбранную деятельность в логи
+    save_log(message.from_user.id, "answer_activity", utc_now, details=activity)
+
+    # Переходим к запросу эмоционального состояния
+    await bot.send_message(
+        message.from_user.id,
+        f"Спасибо! Я записал твою текущую деятельность как: {activity}.\nТеперь давай узнаем, как ты себя чувствуешь эмоционально.",
         reply_markup=mood_keyboard,
     )
 
-    # Планируем проверку ответа через 5 минут
-    scheduler.add_job(
-        check_for_response,
-        "date",
-        run_date=utc_now + timedelta(minutes=5),
-        args=[user_id],
-        id=f"check_response_{user_id}",
-        misfire_grace_time=300,
-    )
-
-async def check_for_response(user_id):
-    """Проверяет, ответил ли пользователь на запрос."""
-    last_event = get_last_event(user_id)
-
-    # Если последнее событие — `response` и ответа нет, отправляем напоминание
-    if last_event and last_event.event_type == "response":
-        time_since_response = datetime.now(timezone.utc) - last_event.timestamp.replace(tzinfo=timezone.utc)
-
-        if time_since_response > timedelta(minutes=5):
-            # Отправляем уведомление
-            await bot.send_message(user_id, "Нельзя пропускать сбор данных!")
-
-            # Сохраняем событие `notification` в логи
-            save_log(user_id, "notification", datetime.now(timezone.utc))
-
-            # Ждём ответа, следующий запрос не отправляем пока нет ответа
-
-@dp.message(lambda msg: msg.text in ["😄 5", "😊 4", "😐 3", "😟 2", "😢 1"])
-async def handle_mood(message: Message):
-    """Обрабатывает выбор настроения."""
+@dp.message(lambda msg: msg.text in [
+    "😄 10", "😊 9", "🙂 8", "😌 7", "😐 6",
+    "😕 5", "😟 4", "😢 3", "😭 2", "🤢 1"
+])
+async def handle_emotional_state(message: Message):
+    """Обрабатывает выбор эмоционального состояния."""
     mood_map = {
-        "😄 5": "Отличное",
-        "😊 4": "Хорошее",
-        "😐 3": "Нормальное",
-        "😟 2": "Плохое",
-        "😢 1": "Очень плохое",
+        "😄 10": "Прекрасное",
+        "😊 9": "Очень хорошее",
+        "🙂 8": "Хорошее",
+        "😌 7": "Удовлетворительное",
+        "😐 6": "Нормальное",
+        "😕 5": "Среднее",
+        "😟 4": "Плохое",
+        "😢 3": "Очень плохое",
+        "😭 2": "Ужасное",
+        "🤢 1": "Критически плохое",
     }
     mood = mood_map[message.text]
     utc_now = datetime.now(timezone.utc)
 
-    # Сохраняем событие `answer` в логи
-    save_log(message.from_user.id, "answer", utc_now, details=mood)
+    # Сохраняем эмоциональное состояние
+    save_log(message.from_user.id, "answer_emotional", utc_now, details=mood)
+
+    # Благодарим пользователя за ответ
+    await message.answer(
+        f"Спасибо! Я записал твоё эмоциональное состояние как: {mood}"
+    )
+
+    # Переходим к запросу физического состояния
+    await send_physical_state_request(message.from_user.id)
+
+async def send_physical_state_request(user_id):
+    """Запрашивает физическое состояние у пользователя."""
+    utc_now = datetime.now(timezone.utc)
+
+    # Сохраняем событие `response_physical` в логи
+    save_log(user_id, "response_physical", utc_now)
+
+    await bot.send_message(
+        user_id,
+        "Как ты себя чувствуешь физически? Выбери оценку:\n"
+        "💪 5  🙂 4  😐 3  😟 2  🤢 1",
+        reply_markup=physical_state_keyboard,
+    )
+
+@dp.message(lambda msg: msg.text in ["💪 5", "🙂 4", "😐 3", "😟 2", "🤢 1"])
+async def handle_physical_state(message: Message):
+    """Обрабатывает выбор физического состояния."""
+    physical_state_map = {
+        "💪 5": "Отличное",
+        "🙂 4": "Хорошее",
+        "😐 3": "Нормальное",
+        "😟 2": "Плохое",
+        "🤢 1": "Очень плохое",
+    }
+    physical_state = physical_state_map[message.text]
+    utc_now = datetime.now(timezone.utc)
+
+    # Сохраняем физическое состояние
+    save_log(message.from_user.id, "answer_physical", utc_now, details=physical_state)
 
     # Запускаем следующий запрос через 1 час
     scheduler.add_job(
-        send_mood_request,
+        send_activity_request,
         "date",
         run_date=utc_now + timedelta(hours=1),
         args=[message.from_user.id],
-        id=f"mood_request_{message.from_user.id}",
+        id=f"activity_request_{message.from_user.id}",
         replace_existing=True,
         misfire_grace_time=3600,
     )
 
     await message.answer(
-        f"Спасибо! Я записал твоё настроение как: {mood}",
+        f"Спасибо! Я записал твоё физическое состояние как: {physical_state}",
         reply_markup=ReplyKeyboardRemove()
     )
 
