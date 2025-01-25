@@ -292,6 +292,7 @@ async def send_selected_analytics(message: Message):
         await message.answer(f"Произошла ошибка при генерации аналитики: {e}")
 
 
+
 # Запуск планировщика и бота
 async def main():
     scheduler.start()  # Запускаем планировщик

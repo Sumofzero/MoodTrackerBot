@@ -4,19 +4,27 @@ import matplotlib.colors as mcolors
 import numpy as np
 from scipy.stats import sem
 from sklearn.linear_model import LinearRegression
+import os
 
+# Базовая директория для сохранения графиков
+BASE_DIR = "/MoodTrackerBot_data"
 
 def save_plot_as_image(func, filename, *args, **kwargs):
     """Сохраняет график, созданный функцией func, в файл."""
+    filepath = os.path.join(BASE_DIR, filename)  # Полный путь
     func(*args, **kwargs)
-    plt.savefig(filename, format='png', dpi=300)
+    plt.savefig(filepath, format='png', dpi=300)
     plt.close()
+    return filepath
 
 
 def calculate_stats(df, group_col='hour', confidence=0.8):
     stats = df.groupby(['day_type', group_col])['score'].agg(['mean', 'std']).reset_index()
     counts = df.groupby(['day_type', group_col])['score'].size().reset_index(name='count')
     stats = pd.merge(stats, counts, on=['day_type', group_col])
+
+    # Исключаем группы с недостаточным количеством данных
+    stats = stats[stats['count'] > 1]  # Минимум 2 записи для расчетов
 
     def safe_confidence_interval(mean, std, count):
         if count > 1:
