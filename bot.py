@@ -259,13 +259,19 @@ async def send_selected_analytics(message: Message):
             df['hour'] = df['timestamp'].dt.hour
             df['day_type'] = df['timestamp'].dt.weekday.apply(lambda x: 'Будний день' if x < 5 else 'Выходной')
 
-            stats = calculate_stats(df)
-            save_plot_as_image(plot_daily_states, "daily_states.png", stats, "Эмоциональное состояние", "Среднее состояние")
-            save_plot_as_image(plot_trend, "emotion_trend.png", df, "Тренд эмоционального состояния", "Эмоциональное состояние")
+            if df.empty:
+                await message.answer("Недостаточно данных для генерации аналитики по эмоциональному состоянию.")
+                return
 
+            stats = calculate_stats(df)
+
+            if stats.empty:
+                await message.answer("Недостаточно данных для расчетов. Попробуйте позже.")
+                return
+
+            file_path = save_plot_as_image(plot_daily_states, "daily_states.png", stats, "Эмоциональное состояние", "Среднее состояние")
             await message.answer("Вот ваша аналитика по эмоциональному состоянию:")
-            await bot.send_photo(message.chat.id, InputFile("daily_states.png"))
-            await bot.send_photo(message.chat.id, InputFile("emotion_trend.png"))
+            await bot.send_photo(message.chat.id, InputFile(file_path))
 
         elif message.text == "Физическое состояние":
             physical_state_map = {
@@ -280,16 +286,23 @@ async def send_selected_analytics(message: Message):
             df['hour'] = df['timestamp'].dt.hour
             df['day_type'] = df['timestamp'].dt.weekday.apply(lambda x: 'Будний день' if x < 5 else 'Выходной')
 
-            stats = calculate_stats(df)
-            save_plot_as_image(plot_daily_states, "physical_states.png", stats, "Физическое состояние", "Среднее состояние")
-            save_plot_as_image(plot_trend, "physical_trend.png", df, "Тренд физического состояния", "Физическое состояние")
+            if df.empty:
+                await message.answer("Недостаточно данных для генерации аналитики по физическому состоянию.")
+                return
 
+            stats = calculate_stats(df)
+
+            if stats.empty:
+                await message.answer("Недостаточно данных для расчетов. Попробуйте позже.")
+                return
+
+            file_path = save_plot_as_image(plot_daily_states, "physical_states.png", stats, "Физическое состояние", "Среднее состояние")
             await message.answer("Вот ваша аналитика по физическому состоянию:")
-            await bot.send_photo(message.chat.id, InputFile("physical_states.png"))
-            await bot.send_photo(message.chat.id, InputFile("physical_trend.png"))
+            await bot.send_photo(message.chat.id, InputFile(file_path))
 
     except Exception as e:
         await message.answer(f"Произошла ошибка при генерации аналитики: {e}")
+
 
 
 
