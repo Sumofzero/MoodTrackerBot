@@ -259,6 +259,9 @@ async def send_selected_analytics(message: Message):
             df['hour'] = df['timestamp'].dt.hour
             df['day_type'] = df['timestamp'].dt.weekday.apply(lambda x: 'Будний день' if x < 5 else 'Выходной')
 
+            point_count = len(df)
+            await message.answer(f"У вас собрано {point_count} точек данных для анализа эмоционального состояния.")
+
             if df.empty:
                 await message.answer("Недостаточно данных для генерации аналитики по эмоциональному состоянию.")
                 return
@@ -269,7 +272,8 @@ async def send_selected_analytics(message: Message):
                 await message.answer("Недостаточно данных для расчетов. Попробуйте позже.")
                 return
 
-            file_path = save_plot_as_image(plot_daily_states, "daily_states.png", stats, "Эмоциональное состояние", "Среднее состояние")
+            file_path = save_plot_as_image(plot_daily_states, "daily_states.png", stats, "Эмоциональное состояние",
+                                           "Среднее состояние")
             await message.answer("Вот ваша аналитика по эмоциональному состоянию:")
             await bot.send_photo(message.chat.id, InputFile(file_path))
 
@@ -286,6 +290,9 @@ async def send_selected_analytics(message: Message):
             df['hour'] = df['timestamp'].dt.hour
             df['day_type'] = df['timestamp'].dt.weekday.apply(lambda x: 'Будний день' if x < 5 else 'Выходной')
 
+            point_count = len(df)
+            await message.answer(f"У вас собрано {point_count} точек данных для анализа физического состояния.")
+
             if df.empty:
                 await message.answer("Недостаточно данных для генерации аналитики по физическому состоянию.")
                 return
@@ -296,7 +303,8 @@ async def send_selected_analytics(message: Message):
                 await message.answer("Недостаточно данных для расчетов. Попробуйте позже.")
                 return
 
-            file_path = save_plot_as_image(plot_daily_states, "physical_states.png", stats, "Физическое состояние", "Среднее состояние")
+            file_path = save_plot_as_image(plot_daily_states, "physical_states.png", stats, "Физическое состояние",
+                                           "Среднее состояние")
             await message.answer("Вот ваша аналитика по физическому состоянию:")
             await bot.send_photo(message.chat.id, InputFile(file_path))
 
