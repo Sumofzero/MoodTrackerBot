@@ -6,10 +6,18 @@ from database import save_user, save_log
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import asyncio
 from datetime import datetime, timedelta, timezone
+from analytics import save_plot_as_image, plot_daily_states, plot_trend, calculate_stats
+from aiogram.types import InputFile
+import pandas as pd
+import sqlite3
+
 
 # Создаём бота
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
+
+# Путь к базе данных
+DB_PATH = "/MoodTrackerBot_data/mood_tracker.db"
 
 # Создаём планировщик задач
 scheduler = AsyncIOScheduler()
@@ -20,6 +28,15 @@ timezones = ["+1 GMT", "+2 GMT", "+3 GMT", "+4 GMT"]
 # Генерация клавиатуры с таймзонами
 timezone_keyboard = ReplyKeyboardMarkup(
     keyboard=[[KeyboardButton(text=tz)] for tz in timezones],
+    resize_keyboard=True
+)
+
+# Клавиатура для выбора аналитики
+analytics_keyboard = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="Эмоциональное состояние")],
+        [KeyboardButton(text="Физическое состояние")],
+    ],
     resize_keyboard=True
 )
 
@@ -196,21 +213,84 @@ async def handle_physical_state(message: Message):
     # Сохраняем физическое состояние
     save_log(message.from_user.id, "answer_physical", utc_now, details=physical_state)
 
-    # Запускаем следующий запрос через 1 час
-    scheduler.add_job(
-        send_activity_request,
-        "date",
-        run_date=utc_now + timedelta(hours=1),
-        args=[message.from_user.id],
-        id=f"activity_request_{message.from_user.id}",
-        replace_existing=True,
-        misfire_grace_time=3600,
+    # Предлагаем запросить аналитику
+    await message.answer(
+        f"Спасибо! Я записал твоё физическое состояние как: {physical_state}.\nХочешь получить аналитику? Нажми на кнопку.",
+        reply_markup=ReplyKeyboardMarkup(
+            keyboard=[[KeyboardButton(text="Запросить аналитику")]], resize_keyboard=True
+        )
     )
 
+@dp.message(lambda msg: msg.text == "Запросить аналитику")
+async def request_analytics(message: Message):
+    """Запрашивает тип аналитики."""
     await message.answer(
-        f"Спасибо! Я записал твоё физическое состояние как: {physical_state}",
-        reply_markup=ReplyKeyboardRemove()
+        "Какую аналитику вы хотите посмотреть? Выберите:",
+        reply_markup=analytics_keyboard
     )
+
+@dp.message(lambda msg: msg.text in ["Эмоциональное состояние", "Физическое состояние"])
+async def send_selected_analytics(message: Message):
+    """Генерирует и отправляет выбранную аналитику для конкретного пользователя."""
+    try:
+        # Подключение к базе данных
+        conn = sqlite3.connect(DB_PATH)
+        query = f"SELECT * FROM logs WHERE user_id = {message.from_user.id}"
+        logs = pd.read_sql_query(query, conn)
+        conn.close()
+
+        logs['timestamp'] = pd.to_datetime(logs['timestamp'])
+
+        if message.text == "Эмоциональное состояние":
+            mood_map = {
+                "Прекрасное": 10,
+                "Очень хорошее": 9,
+                "Хорошее": 8,
+                "Удовлетворительное": 7,
+                "Нормальное": 6,
+                "Среднее": 5,
+                "Плохое": 4,
+                "Очень плохое": 3,
+                "Ужасное": 2,
+                "Критически плохое": 1,
+            }
+            df = logs[logs['event_type'] == 'answer_emotional'].copy()
+            df['score'] = df['details'].map(mood_map)
+            df['hour'] = df['timestamp'].dt.hour
+            df['day_type'] = df['timestamp'].dt.weekday.apply(lambda x: 'Будний день' if x < 5 else 'Выходной')
+
+            stats = calculate_stats(df)
+            save_plot_as_image(plot_daily_states, "daily_states.png", stats, "Эмоциональное состояние", "Среднее состояние")
+            save_plot_as_image(plot_trend, "emotion_trend.png", df, "Тренд эмоционального состояния", "Эмоциональное состояние")
+
+            await message.answer("Вот ваша аналитика по эмоциональному состоянию:")
+            await bot.send_photo(message.chat.id, InputFile("daily_states.png"))
+            await bot.send_photo(message.chat.id, InputFile("emotion_trend.png"))
+
+        elif message.text == "Физическое состояние":
+            physical_state_map = {
+                "Отличное": 5,
+                "Хорошее": 4,
+                "Нормальное": 3,
+                "Плохое": 2,
+                "Очень плохое": 1,
+            }
+            df = logs[logs['event_type'] == 'answer_physical'].copy()
+            df['score'] = df['details'].map(physical_state_map)
+            df['hour'] = df['timestamp'].dt.hour
+            df['day_type'] = df['timestamp'].dt.weekday.apply(lambda x: 'Будний день' if x < 5 else 'Выходной')
+
+            stats = calculate_stats(df)
+            save_plot_as_image(plot_daily_states, "physical_states.png", stats, "Физическое состояние", "Среднее состояние")
+            save_plot_as_image(plot_trend, "physical_trend.png", df, "Тренд физического состояния", "Физическое состояние")
+
+            await message.answer("Вот ваша аналитика по физическому состоянию:")
+            await bot.send_photo(message.chat.id, InputFile("physical_states.png"))
+            await bot.send_photo(message.chat.id, InputFile("physical_trend.png"))
+
+    except Exception as e:
+        await message.answer(f"Произошла ошибка при генерации аналитики: {e}")
+
 
 # Запуск планировщика и бота
 async def main():
