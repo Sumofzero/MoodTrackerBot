@@ -5,16 +5,16 @@ import numpy as np
 from scipy.stats import sem
 from sklearn.linear_model import LinearRegression
 import os
+import io
 
-
-def save_plot_as_image(func, filename, *args, **kwargs):
-    BASE_DIR = "/tmp"  # Временная папка для записи файлов
-    filepath = os.path.join(BASE_DIR, filename)  # Полный путь к файлу
-
+def save_plot_as_image(func, *args, **kwargs):
+    """Сохраняет график в памяти и возвращает объект BytesIO."""
+    buffer = io.BytesIO()
     func(*args, **kwargs)
-    plt.savefig(filepath, format='png', dpi=300)
+    plt.savefig(buffer, format='png', dpi=300)
     plt.close()
-    return filepath
+    buffer.seek(0)  # Возвращаемся в начало буфера
+    return buffer
 
 
 def calculate_stats(df, group_col='hour', confidence=0.8):

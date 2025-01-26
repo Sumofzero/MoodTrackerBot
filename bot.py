@@ -10,6 +10,8 @@ from analytics import save_plot_as_image, plot_daily_states, plot_trend, calcula
 from aiogram.types import InputFile
 import pandas as pd
 import sqlite3
+import os
+import io
 
 
 # Создаём бота
@@ -272,10 +274,9 @@ async def send_selected_analytics(message: Message):
                 await message.answer("Недостаточно данных для расчетов. Попробуйте позже.")
                 return
 
-            file_path = save_plot_as_image(plot_daily_states, "daily_states.png", stats, "Эмоциональное состояние",
-                                           "Среднее состояние")
+            buffer = save_plot_as_image(plot_daily_states, stats, "Эмоциональное состояние", "Среднее состояние")
             await message.answer("Вот ваша аналитика по эмоциональному состоянию:")
-            await bot.send_photo(message.chat.id, InputFile(file_path))
+            await bot.send_photo(message.chat.id, InputFile(buffer, filename="daily_states.png"))
 
         elif message.text == "Физическое состояние":
             physical_state_map = {
@@ -303,10 +304,9 @@ async def send_selected_analytics(message: Message):
                 await message.answer("Недостаточно данных для расчетов. Попробуйте позже.")
                 return
 
-            file_path = save_plot_as_image(plot_daily_states, "physical_states.png", stats, "Физическое состояние",
-                                           "Среднее состояние")
+            buffer = save_plot_as_image(plot_daily_states, stats, "Физическое состояние", "Среднее состояние")
             await message.answer("Вот ваша аналитика по физическому состоянию:")
-            await bot.send_photo(message.chat.id, InputFile(file_path))
+            await bot.send_photo(message.chat.id, InputFile(buffer, filename="daily_states.png"))
 
     except Exception as e:
         await message.answer(f"Произошла ошибка при генерации аналитики: {e}")
