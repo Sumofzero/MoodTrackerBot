@@ -5,13 +5,24 @@ from config import BOT_TOKEN
 from database import save_user, save_log
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import asyncio
-from datetime import datetime, timedelta, timezone
-from analytics import save_plot_as_image, plot_daily_states, plot_trend, calculate_stats
-from aiogram.types import InputFile
+from datetime import datetime, timezone
+from analytics import generate_and_send_charts
 import pandas as pd
 import sqlite3
-import os
-import io
+import logging
+
+# Настройка логирования
+logging.basicConfig(
+    level=logging.INFO,  # Уровень логирования: DEBUG, INFO, WARNING, ERROR, CRITICAL
+    format="%(asctime)s - %(levelname)s - %(message)s",  # Формат записи
+    handlers=[
+        logging.StreamHandler()  # Вывод логов в консоль (подходит для Render)
+    ]
+)
+
+# Создаем объект логгера
+logger = logging.getLogger(__name__)
+
 
 
 # Создаём бота
@@ -268,27 +279,9 @@ async def send_selected_analytics(message: Message):
                 await message.answer("Недостаточно данных для генерации аналитики по эмоциональному состоянию.")
                 return
 
-            stats = calculate_stats(df)
+            # Генерация и отправка графиков
+            generate_and_send_charts(BOT_TOKEN, message.chat.id, df, "emotion", logger)
 
-            if stats.empty:
-                await message.answer("Недостаточно данных для расчетов. Попробуйте позже.")
-                return
-
-            file_path = save_plot_as_image(plot_daily_states, "daily_states.png", stats, "Эмоциональное состояние", "Среднее состояние")
-
-            if not os.path.exists("/MoodTrackerBot_data"):
-                print("Директория /MoodTrackerBot_data не существует.")
-
-            if os.path.exists(file_path) and os.access(file_path, os.R_OK):
-                print("Файл существует и доступен для чтения.")
-            else:
-                print("Файл недоступен для чтения.")
-
-            await message.answer("Вот ваша аналитика по эмоциональному состоянию:")
-            try:
-                await bot.send_photo(message.chat.id, InputFile(file_path))
-            except Exception as e:
-                await message.answer(f"Ошибка при отправке графика: {e}")
 
 
         elif message.text == "Физическое состояние":
@@ -304,27 +297,7 @@ async def send_selected_analytics(message: Message):
             df['hour'] = df['timestamp'].dt.hour
             df['day_type'] = df['timestamp'].dt.weekday.apply(lambda x: 'Будний день' if x < 5 else 'Выходной')
 
-            point_count = len(df)
-            await message.answer(f"У вас собрано {point_count} точек данных для анализа физического состояния.")
-
-            if df.empty:
-                await message.answer("Недостаточно данных для генерации аналитики по физическому состоянию.")
-                return
-
-            stats = calculate_stats(df)
-
-            if stats.empty:
-                await message.answer("Недостаточно данных для расчетов. Попробуйте позже.")
-                return
-
-            file_path = save_plot_as_image(plot_daily_states, "daily_states.png", stats, "Физическое состояние",
-                                           "Среднее состояние")
-
-            await message.answer("Вот ваша аналитика по физическому состоянию:")
-            try:
-                await bot.send_photo(message.chat.id, InputFile(file_path))
-            except Exception as e:
-                await message.answer(f"Ошибка при отправке графика: {e}")
+            generate_and_send_charts(BOT_TOKEN, message.chat.id, df, "physical", logger)
 
     except Exception as e:
         await message.answer(f"Произошла ошибка при генерации аналитики: {e}")
