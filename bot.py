@@ -326,7 +326,6 @@ async def send_selected_analytics(message: Message):
 
 
 
-
 # Запуск планировщика и бота
 async def main():
     scheduler.start()  # Запускаем планировщик

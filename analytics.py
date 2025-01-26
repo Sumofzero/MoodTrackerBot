@@ -7,7 +7,6 @@ from sklearn.linear_model import LinearRegression
 import os
 import io
 
-
 def save_plot_as_image(func, filename, *args, **kwargs):
     BASE_DIR = "/MoodTrackerBot_data"  # Путь к SSD
     if not os.path.exists(BASE_DIR):
