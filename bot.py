@@ -279,6 +279,11 @@ async def send_selected_analytics(message: Message):
             if not os.path.exists("/MoodTrackerBot_data"):
                 print("Директория /MoodTrackerBot_data не существует.")
 
+            if os.path.exists(file_path) and os.access(file_path, os.R_OK):
+                print("Файл существует и доступен для чтения.")
+            else:
+                print("Файл недоступен для чтения.")
+
             await message.answer("Вот ваша аналитика по эмоциональному состоянию:")
             try:
                 await bot.send_photo(message.chat.id, InputFile(file_path))
