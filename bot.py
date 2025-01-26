@@ -275,6 +275,7 @@ async def send_selected_analytics(message: Message):
                 return
 
             buffer = save_plot_as_image(plot_daily_states, stats, "Эмоциональное состояние", "Среднее состояние")
+            print(buffer)
             await message.answer("Вот ваша аналитика по эмоциональному состоянию:")
             await bot.send_photo(message.chat.id, InputFile(buffer, filename="daily_states.png"))
 
