@@ -6,12 +6,13 @@ from scipy.stats import sem
 from sklearn.linear_model import LinearRegression
 import os
 
-# Базовая директория для сохранения графиков
-BASE_DIR = "/MoodTrackerBot_data"
 
 def save_plot_as_image(func, filename, *args, **kwargs):
-    """Сохраняет график, созданный функцией func, в файл."""
-    filepath = os.path.join(BASE_DIR, filename)  # Полный путь
+    BASE_DIR = "/MoodTrackerBot_visualization"  # Папка для сохранения файлов
+    if not os.path.exists(BASE_DIR):
+        os.makedirs(BASE_DIR)  # Создаем папку, если она отсутствует
+
+    filepath = os.path.join(BASE_DIR, filename)  # Полный путь к файлу
     func(*args, **kwargs)
     plt.savefig(filepath, format='png', dpi=300)
     plt.close()
