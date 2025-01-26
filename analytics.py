@@ -7,14 +7,17 @@ from sklearn.linear_model import LinearRegression
 import os
 import io
 
-def save_plot_as_image(func, *args, **kwargs):
-    """Сохраняет график в памяти и возвращает объект BytesIO."""
-    buffer = io.BytesIO()
+
+def save_plot_as_image(func, filename, *args, **kwargs):
+    BASE_DIR = "/MoodTrackerBot_data"  # Путь к SSD
+    if not os.path.exists(BASE_DIR):
+        raise ValueError(f"Директория {BASE_DIR} недоступна для записи.")
+
+    filepath = os.path.join(BASE_DIR, filename)  # Полный путь к файлу
     func(*args, **kwargs)
-    plt.savefig(buffer, format='png', dpi=300)
+    plt.savefig(filepath, format='png', dpi=300)
     plt.close()
-    buffer.seek(0)  # Возвращаемся в начало буфера
-    return buffer
+    return filepath
 
 
 def calculate_stats(df, group_col='hour', confidence=0.8):
