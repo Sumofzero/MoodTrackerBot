@@ -187,5 +187,5 @@ def plot_frequency_analysis(df, title, ylabel):
     plt.title(title, fontsize=16)
     plt.xlabel('Период (дни)', fontsize=12)
     plt.ylabel(ylabel, fontsize=12)
-    plt.xscale('log')
+    # plt.xscale('log')
     plt.grid(axis='y', linestyle='--', alpha=0.7)
