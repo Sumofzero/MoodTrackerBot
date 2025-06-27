@@ -17,7 +17,7 @@ from database_safe import (
 )
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import pandas as pd
-from analytics import generate_and_send_charts
+from analytics_safe import generate_and_send_charts
 
 # Настройка логирования
 logging.basicConfig(
