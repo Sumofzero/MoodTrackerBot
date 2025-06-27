@@ -1,0 +1,20 @@
+# IDE и окружения
+.idea/
+venv/
+__pycache__/
+
+# Данные и бэкапы
+*.db
+logs.csv
+backups/
+
+# Конфиденциальные файлы
+.env
+
+# Jupyter
+*.ipynb
+.ipynb_checkpoints/
+
+# Покрытие и прочий кеш
+coverage/
+*.coverage 
