@@ -5,7 +5,9 @@ from datetime import datetime, timedelta, timezone
 
 from aiogram import Bot, Dispatcher
 from aiogram.filters import Command
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove, Message
+from aiogram.types import (
+    ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove, Message
+)
 
 from config import BOT_TOKEN, DB_PATH, LOG_LEVEL
 from database_safe import (
@@ -13,11 +15,18 @@ from database_safe import (
     save_activity_and_create_mood_request,
     save_emotion_and_update_request,
     mark_request_as_unanswered,
-    get_pending_requests
+    get_pending_requests,
+    get_last_event,
+    get_user_activities,
+    EventData, MoodRequestData
 )
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import pandas as pd
-from analytics_safe import generate_and_send_charts
+from analytics_safe import (
+    generate_and_send_charts, generate_and_send_correlation_analysis, should_generate_correlation_analysis,
+    generate_and_send_new_charts, should_generate_new_charts,
+    generate_smart_insights, should_generate_smart_insights
+)
 
 # Настройка логирования
 logging.basicConfig(
@@ -34,78 +43,208 @@ dp = Dispatcher()
 # Планировщик задач
 scheduler = AsyncIOScheduler()
 
-# Определяем клавиатуры
+# --------- runtime state ---------
+# Users who invoked /start and should always receive first survey right after choosing TZ
+_force_first_survey: set[int] = set()
+# Users who came from settings (should go to main menu after timezone selection, not survey)
+_from_settings: set[int] = set()
+
+# ======================== REPLY КЛАВИАТУРЫ ========================
+
+# Главное меню
+def get_main_menu():
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="📊 Аналитика")],
+            [KeyboardButton(text="⚙️ Настройки")],
+            [KeyboardButton(text="ℹ️ Помощь")]
+        ],
+        resize_keyboard=True,
+        one_time_keyboard=False
+    )
+
+# Клавиатура выбора таймзоны
+def get_timezone_keyboard():
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="+1 GMT"), KeyboardButton(text="+2 GMT")],
+            [KeyboardButton(text="+3 GMT"), KeyboardButton(text="+4 GMT")]
+        ],
+        resize_keyboard=True,
+        one_time_keyboard=True
+    )
+
+# Клавиатура выбора активности
+def get_activity_keyboard():
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="💼 Работаю / Учусь")],
+            [KeyboardButton(text="🚶 Гуляю")],
+            [KeyboardButton(text="📺 Отдыхаю / Смотрю видео")],
+            [KeyboardButton(text="🏃 Занимаюсь спортом"), KeyboardButton(text="👥 Общаюсь с друзьями")],
+            [KeyboardButton(text="📚 Читаю статью / книгу"), KeyboardButton(text="🎯 Другое")]
+        ],
+        resize_keyboard=True,
+        one_time_keyboard=True
+    )
+
+# Эмоциональное состояние
+def get_mood_keyboard():
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="😄 10"), KeyboardButton(text="😊 9"), KeyboardButton(text="🙂 8"), KeyboardButton(text="😌 7"), KeyboardButton(text="😐 6")],
+            [KeyboardButton(text="😕 5"), KeyboardButton(text="😟 4"), KeyboardButton(text="😢 3"), KeyboardButton(text="😭 2"), KeyboardButton(text="🤢 1")]
+        ],
+        resize_keyboard=True,
+        one_time_keyboard=True
+    )
+
+# Физическое состояние
+def get_physical_keyboard():
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="💪 5"), KeyboardButton(text="🙂 4"), KeyboardButton(text="😐 3"), KeyboardButton(text="😟 2"), KeyboardButton(text="🤢 1")]
+        ],
+        resize_keyboard=True,
+        one_time_keyboard=True
+    )
+
+# Аналитика теперь использует reply клавиатуры для удобства
+
+# ======================== КОНСТАНТЫ ========================
+
+# Доступные таймзоны
 timezones = ["+1 GMT", "+2 GMT", "+3 GMT", "+4 GMT"]
-timezone_keyboard = ReplyKeyboardMarkup(
-    keyboard=[[KeyboardButton(text=tz)] for tz in timezones],
-    resize_keyboard=True
-)
 
-analytics_keyboard = ReplyKeyboardMarkup(
-    keyboard=[
-        [KeyboardButton(text="Эмоциональное состояние")],
-        [KeyboardButton(text="Физическое состояние")],
-    ],
-    resize_keyboard=True
-)
+# Мапинги для преобразования данных
+ACTIVITY_MAP = {
+    "💼 Работаю / Учусь": "Работаю / Учусь",
+    "🚶 Гуляю": "Гуляю",
+    "🏃 Занимаюсь спортом": "Занимаюсь спортом", 
+    "📺 Отдыхаю / Смотрю видео": "Отдыхаю / Смотрю видео",
+    "📚 Читаю статью / книгу": "Читаю статью / книгу",
+    "👥 Общаюсь с друзьями": "Общаюсь с друзьями",
+    "🎯 Другое": "Другое"
+}
 
-mood_keyboard = ReplyKeyboardMarkup(
-    keyboard=[
-        [KeyboardButton(text="😄 10"), KeyboardButton(text="😊 9"),
-         KeyboardButton(text="🙂 8"), KeyboardButton(text="😌 7"),
-         KeyboardButton(text="😐 6")],
-        [KeyboardButton(text="😕 5"), KeyboardButton(text="😟 4"),
-         KeyboardButton(text="😢 3"), KeyboardButton(text="😭 2"),
-         KeyboardButton(text="🤢 1")],
-    ],
-    resize_keyboard=True
-)
+MOOD_MAP = {
+    "😄 10": "Прекрасное",
+    "😊 9": "Очень хорошее",
+    "🙂 8": "Хорошее",
+    "😌 7": "Удовлетворительное",
+    "😐 6": "Нормальное",
+    "😕 5": "Среднее",
+    "😟 4": "Плохое",
+    "😢 3": "Очень плохое",
+    "😭 2": "Ужасное",
+    "🤢 1": "Критически плохое",
+}
 
-physical_state_keyboard = ReplyKeyboardMarkup(
-    keyboard=[
-        [KeyboardButton(text="💪 5"), KeyboardButton(text="🙂 4"),
-         KeyboardButton(text="😐 3"), KeyboardButton(text="😟 2"),
-         KeyboardButton(text="🤢 1")]
-    ],
-    resize_keyboard=True
-)
+PHYSICAL_STATE_MAP = {
+    "💪 5": "Отличное",
+    "🙂 4": "Хорошее",
+    "😐 3": "Нормальное",
+    "😟 2": "Плохое",
+    "🤢 1": "Очень плохое",
+}
 
-activity_keyboard = ReplyKeyboardMarkup(
-    keyboard=[
-        [KeyboardButton(text="Работаю / Учусь")],
-        [KeyboardButton(text="Гуляю")],
-        [KeyboardButton(text="Занимаюсь спортом")],
-        [KeyboardButton(text="Отдыхаю / Смотрю видео")],
-        [KeyboardButton(text="Читаю статью / книгу")],
-        [KeyboardButton(text="Общаюсь с друзьями")],
-        [KeyboardButton(text="Другое")],
-    ],
-    resize_keyboard=True
-)
+# Мапинги для аналитики
+MOOD_SCORE_MAP = {
+    "Прекрасное": 10, "Очень хорошее": 9, "Хорошее": 8,
+    "Удовлетворительное": 7, "Нормальное": 6, "Среднее": 5,
+    "Плохое": 4, "Очень плохое": 3, "Ужасное": 2, "Критически плохое": 1
+}
 
-# ----------------------- Обработчики команд и сообщений -----------------------
+PHYSICAL_SCORE_MAP = {
+    "Отличное": 5, "Хорошее": 4, "Нормальное": 3, 
+    "Плохое": 2, "Очень плохое": 1
+}
+
+# ======================== ОБРАБОТЧИКИ КОМАНД ========================
 
 @dp.message(Command("start"))
 async def start_command(message: Message):
     """Приветствие и выбор таймзоны."""
+    # Помечаем пользователя, чтобы после выбора таймзоны сразу отправить опрос
+    _force_first_survey.add(message.from_user.id)
     await message.answer(
-        "Привет! Я помогу отслеживать твоё настроение и самочувствие. Выбери свою таймзону:",
-        reply_markup=timezone_keyboard,
+        "🤖 Привет! Я помогу отслеживать твоё настроение и самочувствие.\n\n"
+        "🌍 Для начала выбери свою таймзону:",
+        reply_markup=get_timezone_keyboard(),
     )
+
+@dp.message(Command("menu"))
+async def menu_command(message: Message):
+    """Показать главное меню."""
+    await message.answer(
+        "📱 Главное меню:\n\n"
+        "📊 Аналитика - просмотр графиков и статистики\n"
+        "⚙️ Настройки - изменение таймзоны и настроек\n"
+        "ℹ️ Помощь - информация о функциях бота",
+        reply_markup=get_main_menu()
+    )
+
+@dp.message(Command("help"))
+async def help_command(message: Message):
+    """Показать справку."""
+    help_text = (
+        "ℹ️ Помощь по использованию бота:\n\n"
+        "🕐 Каждый час я буду спрашивать:\n"
+        "• Что ты делаешь сейчас\n"
+        "• Твоё эмоциональное состояние (1-10)\n"
+        "• Твоё физическое состояние (1-5)\n\n"
+        "📊 В аналитике ты увидишь:\n"
+        "• Графики настроения по времени\n"
+        "• Тренды и закономерности\n"
+        "• Частотный анализ (при достаточном количестве данных)\n\n"
+        "🤖 Команды:\n"
+        "/start - начать работу\n"
+        "/menu - главное меню\n"
+        "/help - эта справка"
+    )
+    await message.answer(help_text, reply_markup=get_main_menu())
+
+# ======================== REPLY MESSAGE ОБРАБОТЧИКИ ========================
 
 @dp.message(lambda msg: msg.text in timezones)
 async def handle_timezone_selection(message: Message):
-    """Сохраняет выбранную таймзону и запускает первый запрос активности."""
+    """Сохраняет выбранную таймзону и запускает опрос активности или показывает главное меню."""
     gmt_offset = int(message.text.split(" ")[0])
     tz_str = f"Etc/GMT{gmt_offset:+d}"
     
     success = save_user(message.from_user.id, tz_str)
     if success:
         await message.answer(
-            f"Таймзона {message.text} успешно сохранена! Теперь я буду спрашивать твоё состояние каждый час.",
+            f"Таймзона {message.text} успешно сохранена!",
             reply_markup=ReplyKeyboardRemove()
         )
-        await send_activity_request(message.from_user.id)
+        
+        # Проверяем контекст: из настроек или из первого запуска
+        from_settings = message.from_user.id in _from_settings
+        from_start = message.from_user.id in _force_first_survey
+        
+        # Очищаем флаги
+        _from_settings.discard(message.from_user.id)
+        _force_first_survey.discard(message.from_user.id)
+        
+        if from_settings:
+            # Пришли из настроек - показываем главное меню
+            await main_menu_handler(message)
+        else:
+            # Пришли из /start или нужен опрос - проверяем нужен ли опрос
+            last_ev = get_last_event(message.from_user.id)
+            should_start = (
+                from_start  # принудительно после /start
+                or last_ev is None  # новый пользователь
+                or (last_ev is not None and datetime.now(timezone.utc) - last_ev.timestamp.replace(tzinfo=timezone.utc) >= timedelta(hours=1))  # давно не было опроса
+            )
+
+            if should_start:
+                # Запускаем опросник
+                await send_activity_request(message.from_user.id)
+            else:
+                # Показываем главное меню
+                await main_menu_handler(message)
     else:
         await message.answer(
             "Произошла ошибка при сохранении настроек. Попробуйте позже."
@@ -121,13 +260,23 @@ async def send_activity_request(user_id):
     if not success:
         logger.error(f"Failed to log activity request for user {user_id}")
     
+    # Используем функцию клавиатуры активности
+    
     await bot.send_message(
         user_id,
-        "Чем ты сейчас занят? Выбери подходящий вариант:",
-        reply_markup=activity_keyboard,
+        "🎯 Чем ты сейчас занят?\n\nВыбери подходящий вариант:",
+        reply_markup=get_activity_keyboard(),
     )
 
 @dp.message(lambda msg: msg.text in [
+    "💼 Работаю / Учусь",
+    "🚶 Гуляю",
+    "🏃 Занимаюсь спортом",
+    "📺 Отдыхаю / Смотрю видео",
+    "📚 Читаю статью / книгу",
+    "👥 Общаюсь с друзьями",
+    "🎯 Другое",
+    # Старые варианты для совместимости
     "Работаю / Учусь",
     "Гуляю",
     "Занимаюсь спортом",
@@ -141,7 +290,8 @@ async def handle_activity(message: Message):
     Обрабатывает выбор текущей деятельности.
     Атомарно сохраняет активность и создает запрос настроения.
     """
-    activity = message.text
+    # Убираем эмодзи для сохранения в базу
+    activity = ACTIVITY_MAP.get(message.text, message.text)
     utc_now = datetime.now(timezone.utc)
     
     # Атомарная операция: сохранение активности + создание mood request
@@ -149,17 +299,19 @@ async def handle_activity(message: Message):
         message.from_user.id, activity, utc_now
     )
     
+    # Используем функцию клавиатуры настроения
+    
     if activity_saved and mood_request_created:
         await bot.send_message(
             message.from_user.id,
-            f"Спасибо! Я записал твою текущую деятельность как: {activity}.\nТеперь давай узнаем, как ты себя чувствуешь эмоционально.",
-            reply_markup=mood_keyboard,
+            f"✅ Записал: {activity}\n\n😊 Теперь оцени своё эмоциональное состояние:",
+            reply_markup=get_mood_keyboard(),
         )
     elif activity_saved:
         await bot.send_message(
             message.from_user.id,
-            f"Активность записана: {activity}. Продолжаем...",
-            reply_markup=mood_keyboard,
+            f"✅ Активность записана: {activity}\n\n😊 Оцени своё эмоциональное состояние:",
+            reply_markup=get_mood_keyboard(),
         )
         logger.warning(f"Activity saved but mood request failed for user {message.from_user.id}")
     else:
@@ -177,19 +329,7 @@ async def handle_emotional_state(message: Message):
     Обрабатывает выбор эмоционального состояния.
     Атомарно сохраняет эмоцию и обновляет mood request.
     """
-    mood_map = {
-        "😄 10": "Прекрасное",
-        "😊 9": "Очень хорошее",
-        "🙂 8": "Хорошее",
-        "😌 7": "Удовлетворительное",
-        "😐 6": "Нормальное",
-        "😕 5": "Среднее",
-        "😟 4": "Плохое",
-        "😢 3": "Очень плохое",
-        "😭 2": "Ужасное",
-        "🤢 1": "Критически плохое",
-    }
-    mood = mood_map[message.text]
+    mood = MOOD_MAP[message.text]
     utc_now = datetime.now(timezone.utc)
     
     # Атомарная операция: сохранение эмоции + обновление mood request
@@ -218,10 +358,11 @@ async def send_physical_state_request(user_id):
     if not success:
         logger.error(f"Failed to log physical request for user {user_id}")
     
+    # Используем функцию клавиатуры физического состояния
     await bot.send_message(
         user_id,
-        "Как ты себя чувствуешь физически? Выбери оценку:\n💪 5  🙂 4  😐 3  😟 2  🤢 1",
-        reply_markup=physical_state_keyboard,
+        "💪 Как ты себя чувствуешь физически?\n\nВыбери оценку:",
+        reply_markup=get_physical_keyboard(),
     )
 
 @dp.message(lambda msg: msg.text in ["💪 5", "🙂 4", "😐 3", "😟 2", "🤢 1"])
@@ -230,23 +371,25 @@ async def handle_physical_state(message: Message):
     Обрабатывает выбор физического состояния.
     После ответа планирует следующий цикл запроса через 1 час.
     """
-    physical_state_map = {
-        "💪 5": "Отличное",
-        "🙂 4": "Хорошее",
-        "😐 3": "Нормальное",
-        "😟 2": "Плохое",
-        "🤢 1": "Очень плохое",
-    }
-    physical_state = physical_state_map[message.text]
+    physical_state = PHYSICAL_STATE_MAP[message.text]
     utc_now = datetime.now(timezone.utc)
     
     success = save_log(message.from_user.id, "answer_physical", utc_now, details=physical_state)
     if success:
+        # Главное меню после завершения цикла
+        completion_keyboard = ReplyKeyboardMarkup(
+            keyboard=[
+                [KeyboardButton(text="📊 Аналитика")],
+                [KeyboardButton(text="📱 Главное меню")]
+            ],
+            resize_keyboard=True,
+            one_time_keyboard=False  # остаётся видимым
+        )
         await message.answer(
-            f"Спасибо! Я записал твоё физическое состояние как: {physical_state}.\nХочешь получить аналитику? Нажми на кнопку.",
-            reply_markup=ReplyKeyboardMarkup(
-                keyboard=[[KeyboardButton(text="Запросить аналитику")]], resize_keyboard=True
-            )
+            f"💪 Физическое состояние: {physical_state}\n\n"
+            f"✅ Спасибо! Все данные записаны.\n"
+            f"📊 Хочешь посмотреть аналитику?",
+            reply_markup=completion_keyboard
         )
         # Планируем следующий запрос активности через 1 час после ответа
         scheduler.add_job(
@@ -255,20 +398,48 @@ async def handle_physical_state(message: Message):
             run_date=datetime.now(timezone.utc) + timedelta(hours=1),
             args=[message.from_user.id]
         )
+        # Показываем главное меню
+        await main_menu_handler(message)
     else:
         await message.answer(
             "Физическое состояние временно не записалось. Данные о настроении сохранены."
         )
         logger.error(f"Failed to save physical state for user {message.from_user.id}")
 
-@dp.message(lambda msg: msg.text == "Запросить аналитику")
+@dp.message(lambda msg: msg.text in ["Запросить аналитику", "📊 Аналитика"])
 async def request_analytics(message: Message):
+    analytics_reply_keyboard = ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="💭 Эмоциональное состояние")],
+            [KeyboardButton(text="💪 Физическое состояние")],
+            [KeyboardButton(text="🔗 Корреляционный анализ")],
+            [KeyboardButton(text="📊 Расширенная аналитика")],
+            [KeyboardButton(text="🧠 Умные инсайты")],
+            [KeyboardButton(text="🔙 Главное меню")]
+        ],
+        resize_keyboard=True,
+        one_time_keyboard=False  # Не скрывать после выбора, удобнее
+    )
     await message.answer(
-        "Какую аналитику вы хотите посмотреть? Выберите:",
-        reply_markup=analytics_keyboard
+        "📊 Какую аналитику хочешь посмотреть?",
+        reply_markup=analytics_reply_keyboard
     )
 
-@dp.message(lambda msg: msg.text in ["Эмоциональное состояние", "Физическое состояние"])
+@dp.message(lambda msg: msg.text == "📱 Главное меню")
+async def main_menu_handler(message: Message):
+    await message.answer(
+        "📱 Главное меню:\n\n"
+        "📊 Аналитика - просмотр графиков и статистики\n"
+        "⚙️ Настройки - изменение настроек\n"
+        "ℹ️ Помощь - справка по использованию",
+        reply_markup=get_main_menu()
+    )
+
+@dp.message(lambda msg: msg.text == "🔙 Главное меню")
+async def back_to_main_menu(message: Message):
+    await main_menu_handler(message)
+
+@dp.message(lambda msg: msg.text in ["Эмоциональное состояние", "Физическое состояние", "💭 Эмоциональное состояние", "💪 Физическое состояние", "🔗 Корреляционный анализ", "📊 Расширенная аналитика", "🧠 Умные инсайты"])
 async def send_selected_analytics(message: Message):
     try:
         conn = sqlite3.connect(DB_PATH)
@@ -279,21 +450,12 @@ async def send_selected_analytics(message: Message):
 
         logs['timestamp'] = pd.to_datetime(logs['timestamp'])
 
-        if message.text == "Эмоциональное состояние":
-            mood_map = {
-                "Прекрасное": 10,
-                "Очень хорошее": 9,
-                "Хорошее": 8,
-                "Удовлетворительное": 7,
-                "Нормальное": 6,
-                "Среднее": 5,
-                "Плохое": 4,
-                "Очень плохое": 3,
-                "Ужасное": 2,
-                "Критически плохое": 1,
-            }
+        # Определяем тип аналитики по содержимому текста (учитываем варианты с эмодзи)
+        text_lower = message.text.lower()
+
+        if "эмоцион" in text_lower:
             df = logs[logs['event_type'] == 'answer_emotional'].copy()
-            df['score'] = df['details'].map(mood_map)
+            df['score'] = df['details'].map(MOOD_SCORE_MAP)
             df['hour'] = df['timestamp'].dt.hour
             df['day_type'] = df['timestamp'].dt.weekday.apply(lambda x: 'Будний день' if x < 5 else 'Выходной')
 
@@ -306,16 +468,12 @@ async def send_selected_analytics(message: Message):
 
             generate_and_send_charts(BOT_TOKEN, message.chat.id, df, "emotion", logger)
 
-        elif message.text == "Физическое состояние":
-            physical_state_map = {
-                "Отличное": 5,
-                "Хорошее": 4,
-                "Нормальное": 3,
-                "Плохое": 2,
-                "Очень плохое": 1,
-            }
+            # Показываем главное меню после отправки графиков
+            await main_menu_handler(message)
+
+        elif "физичес" in text_lower:
             df = logs[logs['event_type'] == 'answer_physical'].copy()
-            df['score'] = df['details'].map(physical_state_map)
+            df['score'] = df['details'].map(PHYSICAL_SCORE_MAP)
             df['hour'] = df['timestamp'].dt.hour
             df['day_type'] = df['timestamp'].dt.weekday.apply(lambda x: 'Будний день' if x < 5 else 'Выходной')
 
@@ -328,9 +486,255 @@ async def send_selected_analytics(message: Message):
 
             generate_and_send_charts(BOT_TOKEN, message.chat.id, df, "physical", logger)
 
+            # Показываем главное меню после отправки графиков
+            await main_menu_handler(message)
+
+        elif "корреляцион" in text_lower:
+            # Корреляционный анализ активностей и состояний
+            await message.answer("🔍 Анализирую корреляции между активностями и состояниями...")
+            
+            # Получаем все данные для корреляционного анализа
+            df_emotion = logs[logs['event_type'] == 'answer_emotional'].copy()
+            df_physical = logs[logs['event_type'] == 'answer_physical'].copy()
+            
+            # Получаем активности из базы данных
+            activities_data = get_user_activities(message.from_user.id)
+            if activities_data:
+                df_activities = pd.DataFrame(activities_data)
+                df_activities['timestamp'] = pd.to_datetime(df_activities['timestamp'])
+            else:
+                df_activities = pd.DataFrame()
+            
+            # Проверяем, достаточно ли данных
+            if should_generate_correlation_analysis(df_emotion, df_physical, df_activities):
+                # Подготавливаем данные для анализа
+                if not df_emotion.empty:
+                    mood_map = {
+                        "Прекрасное": 10, "Очень хорошее": 9, "Хорошее": 8,
+                        "Удовлетворительное": 7, "Нормальное": 6, "Среднее": 5,
+                        "Плохое": 4, "Очень плохое": 3, "Ужасное": 2, "Критически плохое": 1
+                    }
+                    df_emotion['score'] = df_emotion['details'].map(mood_map)
+                
+                if not df_physical.empty:
+                    physical_map = {
+                        "Отличное": 5, "Хорошее": 4, "Нормальное": 3, 
+                        "Плохое": 2, "Очень плохое": 1
+                    }
+                    df_physical['score'] = df_physical['details'].map(physical_map)
+                
+                # Генерируем корреляционный анализ
+                generate_and_send_correlation_analysis(
+                    BOT_TOKEN, message.chat.id, df_emotion, df_physical, df_activities, logger
+                )
+                
+                await message.answer("✅ Корреляционный анализ отправлен!")
+            else:
+                await message.answer(
+                    "📊 Недостаточно данных для корреляционного анализа.\n\n"
+                    "Необходимо минимум:\n"
+                    "• 5 записей активностей\n"
+                    "• 5 записей эмоционального состояния\n"
+                    "• 3 записи физического состояния\n\n"
+                    "Продолжайте заполнять дневник!"
+                )
+            
+            # Показываем главное меню после анализа
+            await main_menu_handler(message)
+            
+        elif "расширенная" in text_lower:
+            # Показываем меню расширенной аналитики
+            extended_analytics_reply_keyboard = ReplyKeyboardMarkup(
+                keyboard=[
+                    [KeyboardButton(text="🔥 Тепловая карта")],
+                    [KeyboardButton(text="📈 Тренды по неделям")],
+                    [KeyboardButton(text="📊 Тренды по месяцам")],
+                    [KeyboardButton(text="⚖️ Сравнение периодов")],
+                    [KeyboardButton(text="🔙 Назад к аналитике")]
+                ],
+                resize_keyboard=True,
+                one_time_keyboard=False
+            )
+            await message.answer(
+                "📊 Расширенная аналитика:\n\n"
+                "🔥 Тепловая карта - настроение по дням недели и часам\n"
+                "📈 Тренды по неделям - еженедельная динамика\n"
+                "📊 Тренды по месяцам - месячная динамика\n"
+                "⚖️ Сравнение периодов - сравнение временных отрезков",
+                reply_markup=extended_analytics_reply_keyboard
+            )
+            
+        elif "умные" in text_lower or "инсайты" in text_lower:
+            # Умные инсайты - персональный анализ паттернов
+            await message.answer("🧠 Анализирую ваши данные и составляю персональные инсайты...")
+            
+            # Получаем все данные для анализа
+            df_emotion = logs[logs['event_type'] == 'answer_emotional'].copy()
+            df_physical = logs[logs['event_type'] == 'answer_physical'].copy()
+            
+            # Получаем активности из базы данных
+            activities_data = get_user_activities(message.from_user.id)
+            if activities_data:
+                df_activities = pd.DataFrame(activities_data)
+                df_activities['timestamp'] = pd.to_datetime(df_activities['timestamp'])
+            else:
+                df_activities = pd.DataFrame()
+            
+            # Проверяем, достаточно ли данных для инсайтов
+            if should_generate_smart_insights(df_emotion, df_physical, df_activities):
+                # Подготавливаем данные для анализа
+                if not df_emotion.empty:
+                    mood_map = {
+                        "Прекрасное": 10, "Очень хорошее": 9, "Хорошее": 8,
+                        "Удовлетворительное": 7, "Нормальное": 6, "Среднее": 5,
+                        "Плохое": 4, "Очень плохое": 3, "Ужасное": 2, "Критически плохое": 1
+                    }
+                    df_emotion['score'] = df_emotion['details'].map(mood_map)
+                
+                if not df_physical.empty:
+                    physical_map = {
+                        "Отличное": 5, "Хорошее": 4, "Нормальное": 3, 
+                        "Плохое": 2, "Очень плохое": 1
+                    }
+                    df_physical['score'] = df_physical['details'].map(physical_map)
+                
+                # Генерируем умные инсайты
+                insights_text = generate_smart_insights(df_emotion, df_physical, df_activities)
+                
+                # Отправляем инсайты пользователю
+                await message.answer(
+                    f"🧠 ВАШИ ПЕРСОНАЛЬНЫЕ ИНСАЙТЫ\n\n{insights_text}",
+                    reply_markup=ReplyKeyboardMarkup(
+                        keyboard=[[KeyboardButton(text="📱 Главное меню")]],
+                        resize_keyboard=True,
+                        one_time_keyboard=False
+                    )
+                )
+                
+            else:
+                await message.answer(
+                    "🧠 Недостаточно данных для генерации умных инсайтов.\n\n"
+                    "Необходимо минимум 5 записей эмоционального состояния.\n"
+                    "У вас пока: {} записей.\n\n"
+                    "Продолжайте заполнять дневник!".format(len(df_emotion))
+                )
+            
+            # Показываем главное меню после анализа
+            await main_menu_handler(message)
+
     except Exception as e:
         logger.error(f"Analytics generation error: {e}")
         await message.answer("Произошла ошибка при генерации аналитики. Попробуйте позже.")
+
+@dp.message(lambda msg: msg.text == "⚙️ Настройки")
+async def settings_handler(message: Message):
+    """Обработчик кнопки Настройки: позволяет изменить таймзону."""
+    # Отмечаем что пользователь пришел из настроек
+    _from_settings.add(message.from_user.id)
+    await message.answer(
+        "⚙️ Настройки:\n\n🌍 Выберите новую таймзону:",
+        reply_markup=get_timezone_keyboard()
+    )
+
+@dp.message(lambda msg: msg.text == "ℹ️ Помощь")
+async def help_reply_handler(message: Message):
+    """Показывает справку по использованию бота."""
+    help_text = (
+        "ℹ️ Помощь по использованию бота:\n\n"
+        "1. Каждый час я спрашиваю вашу текущую деятельность и состояние.\n"
+        "2. Используйте кнопки для быстрого ответа.\n"
+        "3. Нажмите 📊 Аналитика, чтобы получить графики.\n\n"
+        "Команды:\n"
+        "/start – перезапуск бота\n"
+        "/menu – главное меню\n"
+    )
+    back_keyboard = ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text="📱 Главное меню")]],
+        resize_keyboard=True,
+        one_time_keyboard=True
+    )
+    await message.answer(help_text, reply_markup=back_keyboard)
+
+@dp.message(lambda msg: msg.text in ["🔥 Тепловая карта", "📈 Тренды по неделям", "📊 Тренды по месяцам", "⚖️ Сравнение периодов"])
+async def handle_extended_analytics_reply(message: Message):
+    """Обработка кнопок расширенной аналитики через reply клавиатуру."""
+    # Карта типов графиков
+    chart_mapping = {
+        "🔥 Тепловая карта": ("heatmap", "тепловую карту"),
+        "📈 Тренды по неделям": ("weekly_trends", "тренды по неделям"), 
+        "📊 Тренды по месяцам": ("monthly_trends", "тренды по месяцам"),
+        "⚖️ Сравнение периодов": ("period_comparison", "сравнение периодов")
+    }
+    
+    chart_type, chart_name = chart_mapping[message.text]
+    await message.answer(f"📊 Генерирую {chart_name}...")
+    
+    try:
+        # Загружаем данные эмоционального состояния (по умолчанию)
+        conn = sqlite3.connect(DB_PATH)
+        query = """
+            SELECT timestamp, event_type, details
+            FROM logs 
+            WHERE user_id = ? AND event_type IN ('answer_emotional') 
+            ORDER BY timestamp
+        """
+        df = pd.read_sql_query(query, conn, params=(message.from_user.id,))
+        conn.close()
+        
+        if df.empty:
+            await message.answer(
+                f"📊 Пока нет данных для создания графика.\n"
+                f"Собери больше записей!"
+            )
+            return
+        
+        # Преобразуем данные
+        df['timestamp'] = pd.to_datetime(df['timestamp'])
+        mood_map = {
+            "Прекрасное": 10, "Очень хорошее": 9, "Хорошее": 8,
+            "Удовлетворительное": 7, "Нормальное": 6, "Среднее": 5,
+            "Плохое": 4, "Очень плохое": 3, "Ужасное": 2, "Критически плохое": 1
+        }
+        df['score'] = df['details'].map(mood_map)
+        
+        # Проверяем, достаточно ли данных для конкретного типа графика
+        if should_generate_new_charts(df, chart_type):
+            # Генерируем и отправляем график
+            success = generate_and_send_new_charts(
+                BOT_TOKEN, message.from_user.id, df, chart_type, "emotion", logger
+            )
+            
+            if success:
+                await message.answer(f"✅ {chart_name.capitalize()} отправлен!")
+            else:
+                await message.answer(f"❌ Ошибка при генерации графика.\nПопробуйте позже.")
+        else:
+            min_data_requirements = {
+                "heatmap": "10 записей",
+                "weekly_trends": "14 записей (2 недели)",
+                "monthly_trends": "14 записей (2 недели)",
+                "period_comparison": "20 записей"
+            }
+            
+            requirement = min_data_requirements.get(chart_type, "больше записей")
+            await message.answer(
+                f"📊 Недостаточно данных для создания графика.\n\n"
+                f"Для графика '{chart_name}' необходимо минимум {requirement}.\n"
+                f"У вас: {len(df)} записей.\n\n"
+                f"Продолжайте заполнять дневник!"
+            )
+        
+        # Показываем главное меню после генерации
+        await main_menu_handler(message)
+        
+    except Exception as e:
+        logger.error(f"Error generating extended chart {chart_type} for user {message.from_user.id}: {e}")
+        await message.answer(f"❌ Ошибка при генерации графика.\nПопробуйте позже.")
+
+@dp.message(lambda msg: msg.text == "🔙 Назад к аналитике")
+async def back_to_analytics_menu(message: Message):
+    """Возврат к меню аналитики."""
+    await request_analytics(message)
 
 # ----------------------- Периодическая проверка запросов настроения -----------------------
 
@@ -384,6 +788,10 @@ async def main():
     except Exception as e:
         logger.error(f"Bot startup failed: {e}")
         raise
+
+# ----------------------- HELPERS -----------------------
+
+# Функция build_timezone_keyboard удалена - используется get_timezone_keyboard()
 
 if __name__ == "__main__":
     asyncio.run(main()) 

@@ -16,7 +16,7 @@ import os
 import time
 from contextlib import contextmanager
 from datetime import datetime
-from typing import Generator, Optional
+from typing import Generator, Optional, NamedTuple
 
 from sqlalchemy import create_engine, Column, Integer, String, DateTime, ForeignKey, event
 from sqlalchemy.ext.declarative import declarative_base
@@ -29,6 +29,26 @@ logger = logging.getLogger(__name__)
 from config import DB_PATH
 
 Base = declarative_base()
+
+
+# ---------------------------------------------------------------------------------
+# Data structures for safe data transfer
+# ---------------------------------------------------------------------------------
+
+class EventData(NamedTuple):
+    """Safe data structure for event information."""
+    user_id: int
+    event_type: str
+    timestamp: datetime
+    details: Optional[str] = None
+
+
+class MoodRequestData(NamedTuple):
+    """Safe data structure for mood request information."""
+    user_id: int
+    request_time: datetime
+    response_time: Optional[datetime] = None
+    status: str = "pending"
 
 
 # ---------------------------------------------------------------------------------
@@ -329,26 +349,66 @@ def get_user(user_id: int) -> Optional[User]:
         return None
 
 
-def get_last_event(user_id: int) -> Optional[Log]:
+def get_last_event(user_id: int) -> Optional[EventData]:
     """Get last log event for user. Returns None if not found."""
     try:
         with get_db_session() as session:
-            return (
+            log = (
                 session.query(Log)
                 .filter_by(user_id=user_id)
                 .order_by(Log.timestamp.desc())
                 .first()
             )
+            if log:
+                return EventData(
+                    user_id=log.user_id,
+                    event_type=log.event_type,
+                    timestamp=log.timestamp,
+                    details=log.details
+                )
+            return None
     except Exception as e:
         logger.error(f"Failed to get last event for user {user_id}: {e}")
         return None
 
 
-def get_pending_requests() -> list[MoodRequest]:
+def get_pending_requests() -> list[MoodRequestData]:
     """Get all pending mood requests. Returns empty list on error."""
     try:
         with get_db_session() as session:
-            return session.query(MoodRequest).filter_by(status="pending").all()
+            requests = session.query(MoodRequest).filter_by(status="pending").all()
+            return [
+                MoodRequestData(
+                    user_id=req.user_id,
+                    request_time=req.request_time,
+                    response_time=req.response_time,
+                    status=req.status
+                )
+                for req in requests
+            ]
     except Exception as e:
         logger.error(f"Failed to get pending requests: {e}")
+        return []
+
+
+def get_user_activities(user_id: int) -> list[dict]:
+    """Get all activities for user. Returns empty list on error."""
+    try:
+        with get_db_session() as session:
+            activities = (
+                session.query(Log)
+                .filter_by(user_id=user_id, event_type="answer_activity")
+                .order_by(Log.timestamp.desc())
+                .all()
+            )
+            return [
+                {
+                    "user_id": activity.user_id,
+                    "activity": activity.details,
+                    "timestamp": activity.timestamp
+                }
+                for activity in activities
+            ]
+    except Exception as e:
+        logger.error(f"Failed to get activities for user {user_id}: {e}")
         return [] 
