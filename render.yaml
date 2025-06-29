@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: moodtrackerbot
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python bot_safe.py
+    envVars:
+      - key: RENDER
+        value: "true"
+      - key: BOT_TOKEN
+        fromDatabase: BOT_TOKEN
+    disk:
+      name: moodtracker-data
+      mountPath: /MoodTrackerBot_data
+      sizeGB: 1 

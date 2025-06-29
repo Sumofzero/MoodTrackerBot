@@ -216,23 +216,42 @@ async def restore_backup_command(message: Message):
     if message.from_user.id != ADMIN_USER_ID:
         return
     
-    await message.answer("🔄 Начинаю восстановление данных из бэкапа от 27 июня...")
+    await message.answer("🔄 Начинаю восстановление данных из бэкапа...")
     
     try:
-        # Импортируем функцию восстановления
-        import sys
         import csv
         from pathlib import Path
+        from config import DATA_DIR
         
-        # Встроенная функция восстановления (упрощенная версия)
-        async def restore_backup_simple():
-            backup_dir = Path(__file__).parent / "backups" / "20250627_201421"
-            csv_path = backup_dir / "logs.csv"
-            
-            if not csv_path.exists():
-                return False, "Файл бэкапа не найден"
+        # Встроенная функция восстановления для продакшена
+        async def restore_backup_from_disk():
+            # В продакшене ищем файл на диске SSD
+            if os.getenv("RENDER"):
+                # Продакшен - ищем файл бэкапа на диске
+                backup_paths = [
+                    DATA_DIR / "backup_logs.csv",  # Основной файл бэкапа
+                    DATA_DIR / "logs_backup.csv",  # Альтернативное имя
+                    Path("/tmp/backup_logs.csv"),  # Временный файл
+                ]
+                csv_path = None
+                for path in backup_paths:
+                    if path.exists():
+                        csv_path = path
+                        break
+                
+                if not csv_path:
+                    return False, "Файл бэкапа не найден на диске. Загрузите его через SSH или используйте скрипт deploy_restore.py"
+            else:
+                # Локальная разработка - используем стандартный путь
+                backup_dir = Path(__file__).parent / "backups" / "20250627_201421"
+                csv_path = backup_dir / "logs.csv"
+                
+                if not csv_path.exists():
+                    return False, f"Файл бэкапа не найден: {csv_path}"
             
             restored_count = 0
+            created_users = set()
+            
             try:
                 with open(csv_path, 'r', encoding='utf-8') as f:
                     reader = csv.DictReader(f)
@@ -242,23 +261,32 @@ async def restore_backup_command(message: Message):
                         timestamp_str = row['timestamp']
                         details = row['details'] if row['details'] else None
                         
+                        # Создаем пользователя если его еще нет
+                        if user_id not in created_users:
+                            save_user(user_id, timezone=None)
+                            created_users.add(user_id)
+                        
+                        # Парсим timestamp
                         try:
                             timestamp = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
                         except ValueError:
                             timestamp = datetime.fromisoformat(timestamp_str)
                         
-                        # Создаем пользователя и сохраняем лог
-                        save_user(user_id, timezone=None)
+                        # Сохраняем лог
                         success = save_log(user_id, event_type, timestamp, details)
                         if success:
                             restored_count += 1
+                
+                # Удаляем файл бэкапа после успешного восстановления
+                if os.getenv("RENDER") and csv_path.exists():
+                    csv_path.unlink()
                             
-                return True, f"Восстановлено {restored_count} записей"
+                return True, f"Восстановлено {restored_count} записей от {len(created_users)} пользователей"
             except Exception as e:
                 return False, str(e)
         
         # Запускаем восстановление
-        success, result_message = await restore_backup_simple()
+        success, result_message = await restore_backup_from_disk()
         
         if success:
             await message.answer(

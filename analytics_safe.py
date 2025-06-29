@@ -8,6 +8,7 @@ import os
 import requests
 from datetime import datetime, timedelta
 import seaborn as sns
+import tempfile
 
 from config import DATA_DIR
 
@@ -22,19 +23,29 @@ def send_photo_via_api(token, chat_id, file_path, caption=None):
     return response.json()
 
 
-def save_plot_as_image(func, filename, *args, **kwargs):
-    """Сохраняет график как изображение в DATA_DIR."""
-    if not DATA_DIR.exists():
-        raise ValueError(f"Директория {DATA_DIR} недоступна для записи.")
+def cleanup_temp_files(*file_paths):
+    """Удаляет временные файлы графиков."""
+    for file_path in file_paths:
+        try:
+            if os.path.exists(file_path):
+                os.remove(file_path)
+        except Exception as e:
+            print(f"Не удалось удалить файл {file_path}: {e}")
 
-    filepath = DATA_DIR / filename
+
+def save_plot_as_image(func, filename, *args, **kwargs):
+    """Сохраняет график как временный файл."""
+    # Используем временную директорию для графиков
+    temp_dir = tempfile.gettempdir()
+    filepath = os.path.join(temp_dir, filename)
+    
     func(*args, **kwargs)
     plt.savefig(filepath, format='png', dpi=300)
     plt.close()
-    return str(filepath)
+    return filepath
 
 def generate_and_send_charts(token, chat_id, df, state_type, logger, df_activities=None):
-    """Универсальная функция для генерации и отправки графиков."""
+    """Универсальная функция для генерации и отправки графиков с автоматической очисткой."""
     # Настраиваем заголовки и файлы
     titles = {
         "emotion": {
@@ -49,11 +60,9 @@ def generate_and_send_charts(token, chat_id, df, state_type, logger, df_activiti
         },
     }
 
-    timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
-    daily_states_path = DATA_DIR / f"{state_type}_daily_states.png"
-    trend_path = DATA_DIR / f"{state_type}_trend.png"
-    freq_analysis_path = DATA_DIR / f"{state_type}_freq_analysis.png"
-
+    # Создаем список временных файлов для последующей очистки
+    temp_files = []
+    
     # Проверяем количество данных
     data_count = len(df)
     logger.info(f"Generating charts for {data_count} data points")
@@ -64,27 +73,31 @@ def generate_and_send_charts(token, chat_id, df, state_type, logger, df_activiti
             # Полная аналитика для достаточного количества данных
             # Ежедневное состояние
             stats = calculate_stats(df)
-            save_plot_as_image(plot_daily_states, f"{state_type}_daily_states.png", stats, titles[state_type]["daily"], "Среднее состояние")
+            daily_states_path = save_plot_as_image(plot_daily_states, f"{state_type}_daily_states.png", stats, titles[state_type]["daily"], "Среднее состояние")
+            temp_files.append(daily_states_path)
 
             # Тренд состояния
-            save_plot_as_image(plot_trend, f"{state_type}_trend.png", df, titles[state_type]["trend"], "Среднее состояние")
+            trend_path = save_plot_as_image(plot_trend, f"{state_type}_trend.png", df, titles[state_type]["trend"], "Среднее состояние")
+            temp_files.append(trend_path)
 
             # Частотный анализ (только если данных много)
             if data_count >= 5:
-                save_plot_as_image(plot_frequency_analysis, f"{state_type}_freq_analysis.png", df, titles[state_type]["freq"], "Амплитуда")
+                freq_analysis_path = save_plot_as_image(plot_frequency_analysis, f"{state_type}_freq_analysis.png", df, titles[state_type]["freq"], "Амплитуда")
+                temp_files.append(freq_analysis_path)
 
             # Отправка графиков через API
             charts_to_send = [
-                (str(daily_states_path), titles[state_type]["daily"]),
-                (str(trend_path), titles[state_type]["trend"]),
+                (daily_states_path, titles[state_type]["daily"]),
+                (trend_path, titles[state_type]["trend"]),
             ]
-            if data_count >= 5:
-                charts_to_send.append((str(freq_analysis_path), titles[state_type]["freq"]))
+            if data_count >= 5 and len(temp_files) >= 3:
+                charts_to_send.append((temp_files[2], titles[state_type]["freq"]))
 
         else:
             # Упрощённая аналитика для малых данных
-            save_plot_as_image(plot_simple_summary, f"{state_type}_daily_states.png", df, titles[state_type]["daily"], "Значения")
-            charts_to_send = [(str(daily_states_path), f"{titles[state_type]['daily']} (базовый вид)")]
+            daily_states_path = save_plot_as_image(plot_simple_summary, f"{state_type}_daily_states.png", df, titles[state_type]["daily"], "Значения")
+            temp_files.append(daily_states_path)
+            charts_to_send = [(daily_states_path, f"{titles[state_type]['daily']} (базовый вид)")]
 
         # Отправка графиков
         for file_path, caption in charts_to_send:
@@ -96,6 +109,10 @@ def generate_and_send_charts(token, chat_id, df, state_type, logger, df_activiti
 
     except Exception as e:
         logger.error(f"Ошибка при генерации или отправке графиков ({state_type}): {e}")
+    finally:
+        # Очищаем временные файлы в любом случае
+        cleanup_temp_files(*temp_files)
+        logger.info(f"Удалено {len(temp_files)} временных файлов графиков")
 
 
 
@@ -710,6 +727,7 @@ def generate_and_send_correlation_analysis(token, chat_id, df_emotion, df_physic
         df_activities: DataFrame с активностями
         logger: Logger для логирования
     """
+    correlation_path = None
     try:
         # Проверяем, достаточно ли данных
         if len(df_activities) < 5 or len(df_emotion) < 5:
@@ -720,14 +738,13 @@ def generate_and_send_correlation_analysis(token, chat_id, df_emotion, df_physic
         correlations = analyze_activity_correlation(df_emotion, df_physical, df_activities)
         
         # Генерируем график корреляций
-        correlation_path = DATA_DIR / "activity_correlation.png"
-        save_plot_as_image(plot_activity_correlation, "activity_correlation.png", correlations)
+        correlation_path = save_plot_as_image(plot_activity_correlation, "activity_correlation.png", correlations)
         
         # Отправляем график
         response = send_photo_via_api(
             token, 
             chat_id, 
-            str(correlation_path), 
+            correlation_path, 
             caption="📊 Корреляционный анализ активностей и состояний"
         )
         
@@ -754,6 +771,11 @@ def generate_and_send_correlation_analysis(token, chat_id, df_emotion, df_physic
             
     except Exception as e:
         logger.error(f"Ошибка при генерации корреляционного анализа: {e}")
+    finally:
+        # Очищаем временный файл
+        if correlation_path:
+            cleanup_temp_files(correlation_path)
+            logger.info("Удален временный файл корреляционного анализа")
 
 
 def should_generate_correlation_analysis(df_emotion, df_physical, df_activities):
@@ -1002,28 +1024,29 @@ def plot_period_comparison(df, title, comparison_type='last_weeks'):
 
 
 def generate_and_send_new_charts(token, chat_id, df, chart_type, state_type, logger):
-    """Генерирует и отправляет новые типы графиков."""
+    """Генерирует и отправляет новые типы графиков с автоматической очисткой."""
+    file_path = None
     try:
         timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
         
         if chart_type == "heatmap":
             filename = f"{state_type}_heatmap_{timestamp}.png"
-            save_plot_as_image(plot_heatmap_mood, filename, df, f"Тепловая карта {state_type}")
+            file_path = save_plot_as_image(plot_heatmap_mood, filename, df, f"Тепловая карта {state_type}")
             caption = f"🔥 Тепловая карта настроения по дням недели и часам"
             
         elif chart_type == "weekly_trends":
             filename = f"{state_type}_weekly_trends_{timestamp}.png"
-            save_plot_as_image(plot_weekly_monthly_trends, filename, df, f"Тренды по неделям - {state_type}", 'week')
+            file_path = save_plot_as_image(plot_weekly_monthly_trends, filename, df, f"Тренды по неделям - {state_type}", 'week')
             caption = f"📈 Тренды по неделям"
             
         elif chart_type == "monthly_trends":
             filename = f"{state_type}_monthly_trends_{timestamp}.png"
-            save_plot_as_image(plot_weekly_monthly_trends, filename, df, f"Тренды по месяцам - {state_type}", 'month')
+            file_path = save_plot_as_image(plot_weekly_monthly_trends, filename, df, f"Тренды по месяцам - {state_type}", 'month')
             caption = f"📊 Тренды по месяцам"
             
         elif chart_type == "period_comparison":
             filename = f"{state_type}_period_comparison_{timestamp}.png"
-            save_plot_as_image(plot_period_comparison, filename, df, f"Сравнение периодов - {state_type}", 'last_weeks')
+            file_path = save_plot_as_image(plot_period_comparison, filename, df, f"Сравнение периодов - {state_type}", 'last_weeks')
             caption = f"⚖️ Сравнение последних недель"
             
         else:
@@ -1031,7 +1054,6 @@ def generate_and_send_new_charts(token, chat_id, df, chart_type, state_type, log
             return False
         
         # Отправляем график
-        file_path = str(DATA_DIR / filename)
         response = send_photo_via_api(token, chat_id, file_path, caption=caption)
         
         if response.get("ok"):
@@ -1044,6 +1066,11 @@ def generate_and_send_new_charts(token, chat_id, df, chart_type, state_type, log
     except Exception as e:
         logger.error(f"Error generating new chart {chart_type}: {e}")
         return False
+    finally:
+        # Очищаем временный файл
+        if file_path:
+            cleanup_temp_files(file_path)
+            logger.info(f"Удален временный файл графика {chart_type}")
 
 
 def should_generate_new_charts(df, chart_type):
