@@ -44,6 +44,9 @@ dp = Dispatcher()
 # Планировщик задач
 scheduler = AsyncIOScheduler()
 
+# ID администратора (замените на ваш Telegram ID)
+ADMIN_USER_ID = 331482026  # Замените на ваш ID
+
 # --------- runtime state ---------
 # Users who invoked /start and should always receive first survey right after choosing TZ
 _force_first_survey: set[int] = set()
@@ -199,16 +202,77 @@ async def help_command(message: Message):
         "• Что ты делаешь сейчас\n"
         "• Твоё эмоциональное состояние (1-10)\n"
         "• Твоё физическое состояние (1-5)\n\n"
-        "📊 В аналитике ты увидишь:\n"
-        "• Графики настроения по времени\n"
-        "• Тренды и закономерности\n"
-        "• Частотный анализ (при достаточном количестве данных)\n\n"
-        "🤖 Команды:\n"
-        "/start - начать работу\n"
-        "/menu - главное меню\n"
-        "/help - эта справка"
+        "📊 Команды:\n"
+        "/start – перезапуск и выбор таймзоны\n"
+        "/menu – главное меню\n"
+        "/help – эта справка\n\n"
+        "📱 Для навигации используйте кнопки в главном меню."
     )
-    await message.answer(help_text, reply_markup=get_main_menu())
+    await message.answer(help_text)
+
+@dp.message(Command("restore_backup"))
+async def restore_backup_command(message: Message):
+    """Команда восстановления данных для администратора."""
+    if message.from_user.id != ADMIN_USER_ID:
+        return
+    
+    await message.answer("🔄 Начинаю восстановление данных из бэкапа от 27 июня...")
+    
+    try:
+        # Импортируем функцию восстановления
+        import sys
+        import csv
+        from pathlib import Path
+        
+        # Встроенная функция восстановления (упрощенная версия)
+        async def restore_backup_simple():
+            backup_dir = Path(__file__).parent / "backups" / "20250627_201421"
+            csv_path = backup_dir / "logs.csv"
+            
+            if not csv_path.exists():
+                return False, "Файл бэкапа не найден"
+            
+            restored_count = 0
+            try:
+                with open(csv_path, 'r', encoding='utf-8') as f:
+                    reader = csv.DictReader(f)
+                    for row in reader:
+                        user_id = int(row['user_id'])
+                        event_type = row['event_type']
+                        timestamp_str = row['timestamp']
+                        details = row['details'] if row['details'] else None
+                        
+                        try:
+                            timestamp = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
+                        except ValueError:
+                            timestamp = datetime.fromisoformat(timestamp_str)
+                        
+                        # Создаем пользователя и сохраняем лог
+                        save_user(user_id, timezone=None)
+                        success = save_log(user_id, event_type, timestamp, details)
+                        if success:
+                            restored_count += 1
+                            
+                return True, f"Восстановлено {restored_count} записей"
+            except Exception as e:
+                return False, str(e)
+        
+        # Запускаем восстановление
+        success, result_message = await restore_backup_simple()
+        
+        if success:
+            await message.answer(
+                f"✅ Данные успешно восстановлены!\n\n"
+                f"📊 {result_message}\n\n"
+                f"🎉 Все исторические данные доступны!\n"
+                f"📈 Проверьте аналитику для подтверждения."
+            )
+        else:
+            await message.answer(f"❌ Ошибка при восстановлении данных: {result_message}")
+            
+    except Exception as e:
+        logger.error(f"Restore backup error: {e}")
+        await message.answer(f"❌ Ошибка восстановления: {str(e)}")
 
 # ======================== REPLY MESSAGE ОБРАБОТЧИКИ ========================
 
