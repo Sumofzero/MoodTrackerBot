@@ -55,19 +55,30 @@ python scripts/backup_data.py
 ```
 
 #### Восстановление данных
-**Способ 1: Автоматический (рекомендуемый)**
+
+**Способ 1: Локальное восстановление на сервере (рекомендуемый)**
 ```bash
-python scripts/deploy_restore.py
+# Если вы находитесь на сервере Render
+python scripts/local_restore.py [дата_бэкапа]
+
+# Пример:
+python scripts/local_restore.py 20250627_201421
 ```
 
-**Способ 2: Через команду бота**
+**Способ 2: Удаленное восстановление через SSH**
+```bash
+# С локального компьютера (требует SSH ключ)
+python scripts/deploy_restore.py [дата_бэкапа]
+```
+
+**Способ 3: Через команду бота**
 1. Загрузите файл бэкапа на сервер:
    ```bash
    scp backups/YYYYMMDD_HHMMSS/logs.csv srv-cssvk3ogph6c7399j0gg@ssh.oregon.render.com:/MoodTrackerBot_data/backup_logs.csv
    ```
 2. Отправьте боту команду `/restore_backup`
 
-**Способ 3: Ручное восстановление**
+**Способ 4: Ручное восстановление**
 ```bash
 ssh srv-cssvk3ogph6c7399j0gg@ssh.oregon.render.com
 cd /opt/render/project/src
