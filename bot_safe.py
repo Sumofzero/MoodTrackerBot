@@ -18,7 +18,8 @@ from database_safe import (
     get_pending_requests,
     get_last_event,
     get_user_activities,
-    EventData, MoodRequestData
+    EventData, MoodRequestData, UserSettingsData,
+    get_user_settings, update_user_settings, should_send_survey
 )
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import pandas as pd
@@ -78,11 +79,14 @@ def get_timezone_keyboard():
 def get_activity_keyboard():
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text="💼 Работаю / Учусь")],
-            [KeyboardButton(text="🚶 Гуляю")],
-            [KeyboardButton(text="📺 Отдыхаю / Смотрю видео")],
-            [KeyboardButton(text="🏃 Занимаюсь спортом"), KeyboardButton(text="👥 Общаюсь с друзьями")],
-            [KeyboardButton(text="📚 Читаю статью / книгу"), KeyboardButton(text="🎯 Другое")]
+            # Работа и обучение
+            [KeyboardButton(text="💼 Работаю / Учусь"), KeyboardButton(text="📚 Читаю статью / книгу")],
+            # Физическая активность  
+            [KeyboardButton(text="🏃 Занимаюсь спортом"), KeyboardButton(text="🚶 Гуляю")],
+            # Отдых и развлечения
+            [KeyboardButton(text="📺 Отдыхаю / Смотрю видео"), KeyboardButton(text="👥 Общаюсь с друзьями")],
+            # Другое
+            [KeyboardButton(text="🎯 Другое")]
         ],
         resize_keyboard=True,
         one_time_keyboard=True
@@ -92,8 +96,10 @@ def get_activity_keyboard():
 def get_mood_keyboard():
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text="😄 10"), KeyboardButton(text="😊 9"), KeyboardButton(text="🙂 8"), KeyboardButton(text="😌 7"), KeyboardButton(text="😐 6")],
-            [KeyboardButton(text="😕 5"), KeyboardButton(text="😟 4"), KeyboardButton(text="😢 3"), KeyboardButton(text="😭 2"), KeyboardButton(text="🤢 1")]
+            # Первая строка: хорошие состояния (10-6) - слева для удобства правшей
+            [KeyboardButton(text="🔥 10"), KeyboardButton(text="😎 9"), KeyboardButton(text="💅 8"), KeyboardButton(text="🙃 7"), KeyboardButton(text="🤗 6")],
+            # Вторая строка: плохие состояния (5-1) 
+            [KeyboardButton(text="🤔 5"), KeyboardButton(text="🙄 4"), KeyboardButton(text="😩 3"), KeyboardButton(text="💔 2"), KeyboardButton(text="💀 1")]
         ],
         resize_keyboard=True,
         one_time_keyboard=True
@@ -103,7 +109,7 @@ def get_mood_keyboard():
 def get_physical_keyboard():
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text="💪 5"), KeyboardButton(text="🙂 4"), KeyboardButton(text="😐 3"), KeyboardButton(text="😟 2"), KeyboardButton(text="🤢 1")]
+            [KeyboardButton(text="🚀 5"), KeyboardButton(text="💯 4"), KeyboardButton(text="🤷‍♂️ 3"), KeyboardButton(text="🥴 2"), KeyboardButton(text="☠️ 1")]
         ],
         resize_keyboard=True,
         one_time_keyboard=True
@@ -128,24 +134,24 @@ ACTIVITY_MAP = {
 }
 
 MOOD_MAP = {
-    "😄 10": "Прекрасное",
-    "😊 9": "Очень хорошее",
-    "🙂 8": "Хорошее",
-    "😌 7": "Удовлетворительное",
-    "😐 6": "Нормальное",
-    "😕 5": "Среднее",
-    "😟 4": "Плохое",
-    "😢 3": "Очень плохое",
-    "😭 2": "Ужасное",
-    "🤢 1": "Критически плохое",
+    "🔥 10": "Прекрасное",
+    "😎 9": "Очень хорошее",
+    "💅 8": "Хорошее",
+    "🙃 7": "Удовлетворительное",
+    "🤗 6": "Нормальное",
+    "🤔 5": "Среднее",
+    "🙄 4": "Плохое",
+    "😩 3": "Очень плохое",
+    "💔 2": "Ужасное", 
+    "💀 1": "Критически плохое",
 }
 
 PHYSICAL_STATE_MAP = {
-    "💪 5": "Отличное",
-    "🙂 4": "Хорошее",
-    "😐 3": "Нормальное",
-    "😟 2": "Плохое",
-    "🤢 1": "Очень плохое",
+    "🚀 5": "Отличное",
+    "💯 4": "Хорошее",
+    "🤷‍♂️ 3": "Нормальное",
+    "🥴 2": "Плохое", 
+    "☠️ 1": "Очень плохое",
 }
 
 # Мапинги для аналитики
@@ -228,19 +234,19 @@ async def handle_timezone_selection(message: Message):
         _force_first_survey.discard(message.from_user.id)
         
         if from_settings:
-            # Пришли из настроек - показываем главное меню
+            # Пришли из настроек - всегда показываем главное меню, опрос не запускаем
             await main_menu_handler(message)
+        elif from_start:
+            # Пришли из /start - принудительно запускаем опрос
+            await send_activity_request(message.from_user.id)
         else:
-            # Пришли из /start или нужен опрос - проверяем нужен ли опрос
+            # Другие случаи - проверяем нужен ли опрос
             last_ev = get_last_event(message.from_user.id)
-            should_start = (
-                from_start  # принудительно после /start
-                or last_ev is None  # новый пользователь
-                or (last_ev is not None and datetime.now(timezone.utc) - last_ev.timestamp.replace(tzinfo=timezone.utc) >= timedelta(hours=1))  # давно не было опроса
-            )
-
-            if should_start:
-                # Запускаем опросник
+            if last_ev is None:
+                # Новый пользователь - запускаем опрос
+                await send_activity_request(message.from_user.id)
+            elif should_send_survey(message.from_user.id, last_ev.timestamp.replace(tzinfo=timezone.utc)):
+                # Давно не было опроса - запускаем
                 await send_activity_request(message.from_user.id)
             else:
                 # Показываем главное меню
@@ -321,8 +327,8 @@ async def handle_activity(message: Message):
         logger.error(f"Failed to save activity for user {message.from_user.id}")
 
 @dp.message(lambda msg: msg.text in [
-    "😄 10", "😊 9", "🙂 8", "😌 7", "😐 6",
-    "😕 5", "😟 4", "😢 3", "😭 2", "🤢 1"
+    "🔥 10", "😎 9", "💅 8", "🙃 7", "🤗 6",
+    "🤔 5", "🙄 4", "😩 3", "💔 2", "💀 1"
 ])
 async def handle_emotional_state(message: Message):
     """
@@ -365,7 +371,7 @@ async def send_physical_state_request(user_id):
         reply_markup=get_physical_keyboard(),
     )
 
-@dp.message(lambda msg: msg.text in ["💪 5", "🙂 4", "😐 3", "😟 2", "🤢 1"])
+@dp.message(lambda msg: msg.text in ["🚀 5", "💯 4", "🤷‍♂️ 3", "🥴 2", "☠️ 1"])
 async def handle_physical_state(message: Message):
     """
     Обрабатывает выбор физического состояния.
@@ -391,13 +397,24 @@ async def handle_physical_state(message: Message):
             f"📊 Хочешь посмотреть аналитику?",
             reply_markup=completion_keyboard
         )
-        # Планируем следующий запрос активности через 1 час после ответа
-        scheduler.add_job(
-            send_activity_request,
-            'date',
-            run_date=datetime.now(timezone.utc) + timedelta(hours=1),
-            args=[message.from_user.id]
-        )
+        # Планируем следующий запрос активности на основе пользовательских настроек
+        settings = get_user_settings(message.from_user.id)
+        if settings:
+            next_survey_time = datetime.now(timezone.utc) + timedelta(minutes=settings.survey_interval)
+            scheduler.add_job(
+                send_activity_request,
+                'date',
+                run_date=next_survey_time,
+                args=[message.from_user.id]
+            )
+        else:
+            # Fallback: если настройки не найдены, используем 1 час
+            scheduler.add_job(
+                send_activity_request,
+                'date',
+                run_date=datetime.now(timezone.utc) + timedelta(hours=1),
+                args=[message.from_user.id]
+            )
         # Показываем главное меню
         await main_menu_handler(message)
     else:
@@ -628,13 +645,37 @@ async def send_selected_analytics(message: Message):
 
 @dp.message(lambda msg: msg.text == "⚙️ Настройки")
 async def settings_handler(message: Message):
-    """Обработчик кнопки Настройки: позволяет изменить таймзону."""
-    # Отмечаем что пользователь пришел из настроек
-    _from_settings.add(message.from_user.id)
-    await message.answer(
-        "⚙️ Настройки:\n\n🌍 Выберите новую таймзону:",
-        reply_markup=get_timezone_keyboard()
+    """Обработчик кнопки Настройки: меню различных настроек."""
+    settings_keyboard = ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="🌍 Изменить таймзону")],
+            [KeyboardButton(text="⏰ Интервал опросов")],
+            [KeyboardButton(text="🔕 Режим тишины")],
+            [KeyboardButton(text="📱 Главное меню")]
+        ],
+        resize_keyboard=True,
+        one_time_keyboard=False
     )
+    
+    # Получаем текущие настройки пользователя
+    settings = get_user_settings(message.from_user.id)
+    if settings:
+        interval_text = f"{settings.survey_interval} мин"
+        quiet_text = "выключен"
+        if settings.quiet_hours_start is not None and settings.quiet_hours_end is not None:
+            quiet_text = f"{settings.quiet_hours_start:02d}:00 - {settings.quiet_hours_end:02d}:00"
+        
+        settings_info = (
+            f"⚙️ НАСТРОЙКИ\n\n"
+            f"⏰ Интервал опросов: {interval_text}\n"
+            f"🔕 Режим тишины: {quiet_text}\n"
+            f"📅 Выходные: {settings.weekend_mode}\n\n"
+            f"Выберите что хотите изменить:"
+        )
+    else:
+        settings_info = "⚙️ НАСТРОЙКИ\n\nВыберите что хотите настроить:"
+    
+    await message.answer(settings_info, reply_markup=settings_keyboard)
 
 @dp.message(lambda msg: msg.text == "ℹ️ Помощь")
 async def help_reply_handler(message: Message):
@@ -735,6 +776,125 @@ async def handle_extended_analytics_reply(message: Message):
 async def back_to_analytics_menu(message: Message):
     """Возврат к меню аналитики."""
     await request_analytics(message)
+
+# ======================== ОБРАБОТЧИКИ НАСТРОЕК ========================
+
+@dp.message(lambda msg: msg.text == "🌍 Изменить таймзону")
+async def timezone_settings_handler(message: Message):
+    """Обработчик изменения таймзоны."""
+    # Отмечаем что пользователь пришел из настроек
+    _from_settings.add(message.from_user.id)
+    await message.answer(
+        "🌍 Выберите новую таймзону:",
+        reply_markup=get_timezone_keyboard()
+    )
+
+@dp.message(lambda msg: msg.text == "⏰ Интервал опросов")
+async def interval_settings_handler(message: Message):
+    """Обработчик настройки интервала опросов."""
+    interval_keyboard = ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="⚡ 30 минут"), KeyboardButton(text="⏰ 1 час")],
+            [KeyboardButton(text="🕐 2 часа")],
+            [KeyboardButton(text="🔙 К настройкам")]
+        ],
+        resize_keyboard=True,
+        one_time_keyboard=True
+    )
+    
+    current_settings = get_user_settings(message.from_user.id)
+    current_interval = "1 час"
+    if current_settings:
+        if current_settings.survey_interval == 30:
+            current_interval = "30 минут" 
+        elif current_settings.survey_interval == 120:
+            current_interval = "2 часа"
+    
+    await message.answer(
+        f"⏰ ИНТЕРВАЛ ОПРОСОВ\n\n"
+        f"Текущий интервал: {current_interval}\n\n"
+        f"Как часто вы хотите получать опросы?",
+        reply_markup=interval_keyboard
+    )
+
+@dp.message(lambda msg: msg.text in ["⚡ 30 минут", "⏰ 1 час", "🕐 2 часа"])
+async def handle_interval_selection(message: Message):
+    """Обработчик выбора интервала опросов."""
+    interval_map = {
+        "⚡ 30 минут": 30,
+        "⏰ 1 час": 60,
+        "🕐 2 часа": 120
+    }
+    
+    new_interval = interval_map[message.text]
+    success = update_user_settings(message.from_user.id, survey_interval=new_interval)
+    
+    if success:
+        await message.answer(
+            f"✅ Интервál опросов изменен на {message.text}",
+            reply_markup=ReplyKeyboardRemove()
+        )
+    else:
+        await message.answer("❌ Ошибка при сохранении настроек")
+    
+    # Возвращаемся к настройкам
+    await settings_handler(message)
+
+@dp.message(lambda msg: msg.text == "🔕 Режим тишины")
+async def quiet_mode_settings_handler(message: Message):
+    """Обработчик настройки режима тишины."""
+    quiet_keyboard = ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="🌙 23:00 - 07:00"), KeyboardButton(text="🌛 22:00 - 08:00")],
+            [KeyboardButton(text="🏠 Настроить вручную")],
+            [KeyboardButton(text="🔊 Отключить тишину")],
+            [KeyboardButton(text="🔙 К настройкам")]
+        ],
+        resize_keyboard=True,
+        one_time_keyboard=True
+    )
+    
+    current_settings = get_user_settings(message.from_user.id)
+    quiet_status = "выключен"
+    if current_settings and current_settings.quiet_hours_start is not None:
+        quiet_status = f"{current_settings.quiet_hours_start:02d}:00 - {current_settings.quiet_hours_end:02d}:00"
+    
+    await message.answer(
+        f"🔕 РЕЖИМ ТИШИНЫ\n\n"
+        f"Текущий режим: {quiet_status}\n\n"
+        f"В период тишины опросы не отправляются.\n"
+        f"Выберите подходящий вариант:",
+        reply_markup=quiet_keyboard
+    )
+
+@dp.message(lambda msg: msg.text in ["🌙 23:00 - 07:00", "🌛 22:00 - 08:00", "🔊 Отключить тишину"])
+async def handle_quiet_mode_selection(message: Message):
+    """Обработчик выбора режима тишины."""
+    if message.text == "🌙 23:00 - 07:00":
+        success = update_user_settings(message.from_user.id, quiet_hours_start=23, quiet_hours_end=7)
+        result_text = "режим тишины: 23:00 - 07:00"
+    elif message.text == "🌛 22:00 - 08:00":
+        success = update_user_settings(message.from_user.id, quiet_hours_start=22, quiet_hours_end=8)  
+        result_text = "режим тишины: 22:00 - 08:00"
+    else:  # Отключить тишину
+        success = update_user_settings(message.from_user.id, quiet_hours_start=None, quiet_hours_end=None)
+        result_text = "режим тишины отключен"
+    
+    if success:
+        await message.answer(
+            f"✅ Настройка сохранена: {result_text}",
+            reply_markup=ReplyKeyboardRemove()
+        )
+    else:
+        await message.answer("❌ Ошибка при сохранении настроек")
+    
+    # Возвращаемся к настройкам
+    await settings_handler(message)
+
+@dp.message(lambda msg: msg.text == "🔙 К настройкам")
+async def back_to_settings(message: Message):
+    """Возврат к меню настроек."""
+    await settings_handler(message)
 
 # ----------------------- Периодическая проверка запросов настроения -----------------------
 

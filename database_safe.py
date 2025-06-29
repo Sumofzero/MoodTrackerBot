@@ -15,7 +15,7 @@ import logging
 import os
 import time
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from typing import Generator, Optional, NamedTuple
 
 from sqlalchemy import create_engine, Column, Integer, String, DateTime, ForeignKey, event
@@ -51,6 +51,16 @@ class MoodRequestData(NamedTuple):
     status: str = "pending"
 
 
+class UserSettingsData(NamedTuple):
+    """Safe data structure for user settings information."""
+    user_id: int
+    survey_interval: int
+    quiet_hours_start: Optional[int] = None
+    quiet_hours_end: Optional[int] = None
+    weekend_mode: str = "normal"
+    reminder_enabled: int = 1
+
+
 # ---------------------------------------------------------------------------------
 # Models
 # ---------------------------------------------------------------------------------
@@ -60,6 +70,17 @@ class User(Base):
     id = Column(Integer, primary_key=True)
     user_id = Column(Integer, unique=True, nullable=False)
     timezone = Column(String, nullable=True)
+
+
+class UserSettings(Base):
+    __tablename__ = "user_settings"
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.user_id"), nullable=False, unique=True)
+    survey_interval = Column(Integer, nullable=False, default=60)  # в минутах: 30, 60, 120
+    quiet_hours_start = Column(Integer, nullable=True)  # час начала тишины (0-23)
+    quiet_hours_end = Column(Integer, nullable=True)    # час окончания тишины (0-23)
+    weekend_mode = Column(String, nullable=False, default="normal")  # "normal", "reduced", "off"
+    reminder_enabled = Column(Integer, nullable=False, default=1)    # 0 или 1
 
 
 class Log(Base):
@@ -411,4 +432,121 @@ def get_user_activities(user_id: int) -> list[dict]:
             ]
     except Exception as e:
         logger.error(f"Failed to get activities for user {user_id}: {e}")
-        return [] 
+        return []
+
+
+# ---------------------------------------------------------------------------------
+# User settings operations
+# ---------------------------------------------------------------------------------
+
+@with_retry()
+def get_user_settings(user_id: int) -> Optional[UserSettingsData]:
+    """Get user settings or create default if not exists."""
+    try:
+        with get_db_session() as session:
+            settings = session.query(UserSettings).filter_by(user_id=user_id).first()
+            if not settings:
+                # Создаем настройки по умолчанию
+                settings = UserSettings(
+                    user_id=user_id,
+                    survey_interval=60,  # 1 час по умолчанию
+                    quiet_hours_start=None,
+                    quiet_hours_end=None,
+                    weekend_mode="normal",
+                    reminder_enabled=1
+                )
+                session.add(settings)
+                session.commit()
+                logger.info(f"Created default settings for user {user_id}")
+            return UserSettingsData(
+                user_id=settings.user_id,
+                survey_interval=settings.survey_interval,
+                quiet_hours_start=settings.quiet_hours_start,
+                quiet_hours_end=settings.quiet_hours_end,
+                weekend_mode=settings.weekend_mode,
+                reminder_enabled=settings.reminder_enabled
+            )
+    except Exception as e:
+        logger.error(f"Failed to get settings for user {user_id}: {e}")
+        return None
+
+
+@with_retry()
+def update_user_settings(
+    user_id: int, 
+    survey_interval: Optional[int] = None,
+    quiet_hours_start: Optional[int] = None,
+    quiet_hours_end: Optional[int] = None,
+    weekend_mode: Optional[str] = None,
+    reminder_enabled: Optional[int] = None
+) -> bool:
+    """Update user settings. Returns True if successful."""
+    try:
+        with get_db_session() as session:
+            settings = session.query(UserSettings).filter_by(user_id=user_id).first()
+            if not settings:
+                # Создаем новые настройки
+                settings = UserSettings(user_id=user_id)
+                session.add(settings)
+            
+            # Обновляем только переданные параметры
+            if survey_interval is not None:
+                settings.survey_interval = survey_interval
+            if quiet_hours_start is not None:
+                settings.quiet_hours_start = quiet_hours_start
+            if quiet_hours_end is not None:
+                settings.quiet_hours_end = quiet_hours_end
+            if weekend_mode is not None:
+                settings.weekend_mode = weekend_mode
+            if reminder_enabled is not None:
+                settings.reminder_enabled = reminder_enabled
+                
+            logger.info(f"Updated settings for user {user_id}")
+            return True
+    except Exception as e:
+        logger.error(f"Failed to update settings for user {user_id}: {e}")
+        return False
+
+
+def is_quiet_hours(user_id: int, current_hour: int) -> bool:
+    """Check if current hour is in user's quiet hours."""
+    settings = get_user_settings(user_id)
+    if not settings or settings.quiet_hours_start is None or settings.quiet_hours_end is None:
+        return False
+    
+    start = settings.quiet_hours_start
+    end = settings.quiet_hours_end
+    
+    # Обработка случая когда quiet hours переходят через полночь
+    if start <= end:
+        return start <= current_hour <= end
+    else:
+        return current_hour >= start or current_hour <= end
+
+
+def should_send_survey(user_id: int, last_event_time: datetime) -> bool:
+    """Check if it's time to send a survey based on user settings."""
+    settings = get_user_settings(user_id)
+    if not settings:
+        return False
+    
+    now = datetime.now(timezone.utc)
+    time_diff = now - last_event_time
+    
+    # Проверяем интервал
+    if time_diff < timedelta(minutes=settings.survey_interval):
+        return False
+    
+    # Проверяем quiet hours
+    current_hour = now.hour
+    if is_quiet_hours(user_id, current_hour):
+        return False
+    
+    # Проверяем выходные (упрощенная логика)
+    if settings.weekend_mode == "off" and now.weekday() >= 5:  # суббота/воскресенье
+        return False
+    elif settings.weekend_mode == "reduced" and now.weekday() >= 5:
+        # В выходные увеличиваем интервал в 2 раза
+        return time_diff >= timedelta(minutes=settings.survey_interval * 2)
+    
+    return True 
