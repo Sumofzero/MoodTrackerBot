@@ -779,6 +779,26 @@ async def back_to_analytics_menu(message: Message):
 
 # ======================== ОБРАБОТЧИКИ НАСТРОЕК ========================
 
+def cancel_user_survey_jobs(user_id: int):
+    """Отменяет все активные jobs опросов для указанного пользователя."""
+    try:
+        jobs = scheduler.get_jobs()
+        cancelled_count = 0
+        for job in jobs:
+            # Проверяем что это job функции send_activity_request с нужным user_id
+            if (job.func == send_activity_request and 
+                len(job.args) > 0 and 
+                job.args[0] == user_id):
+                scheduler.remove_job(job.id)
+                cancelled_count += 1
+                logger.info(f"Cancelled survey job {job.id} for user {user_id}")
+        
+        if cancelled_count > 0:
+            logger.info(f"Cancelled {cancelled_count} survey jobs for user {user_id}")
+            
+    except Exception as e:
+        logger.error(f"Error cancelling survey jobs for user {user_id}: {e}")
+
 @dp.message(lambda msg: msg.text == "🌍 Изменить таймзону")
 async def timezone_settings_handler(message: Message):
     """Обработчик изменения таймзоны."""
@@ -830,8 +850,24 @@ async def handle_interval_selection(message: Message):
     success = update_user_settings(message.from_user.id, survey_interval=new_interval)
     
     if success:
+        # Отменяем все старые jobs опросов для этого пользователя
+        cancel_user_survey_jobs(message.from_user.id)
+        
+        # Проверяем, нужно ли создать новый job
+        last_ev = get_last_event(message.from_user.id)
+        if last_ev and should_send_survey(message.from_user.id, last_ev.timestamp.replace(tzinfo=timezone.utc)):
+            # Если пора отправлять опрос - создаем job на ближайшее время (через 1 минуту)
+            scheduler.add_job(
+                send_activity_request,
+                'date',
+                run_date=datetime.now(timezone.utc) + timedelta(minutes=1),
+                args=[message.from_user.id]
+            )
+            logger.info(f"Scheduled immediate survey for user {message.from_user.id} after interval change")
+        
         await message.answer(
-            f"✅ Интервál опросов изменен на {message.text}",
+            f"✅ Интервал опросов изменен на {message.text}\n"
+            f"🔄 Старые запланированные опросы отменены",
             reply_markup=ReplyKeyboardRemove()
         )
     else:
@@ -901,31 +937,43 @@ async def back_to_settings(message: Message):
 async def check_pending_requests():
     """
     Каждые 10 минут проверяем в БД все запросы настроения со статусом "pending":
-    - Если прошло более 1 часа с момента запроса (но менее 2 часов) – отправляем напоминание.
-    - Если прошло более 2 часов – помечаем запрос как неотвеченный и уведомляем пользователя.
+    - Персональные напоминания на основе настроек пользователя
+    - Если прошло времени больше чем 2x интервал - помечаем как неотвеченный
     """
     try:
         now = datetime.now(timezone.utc)
         pending_requests = get_pending_requests()
         
         for req in pending_requests:
+            # Получаем персональные настройки пользователя
+            settings = get_user_settings(req.user_id)
+            if not settings:
+                continue  # Пропускаем если настройки не найдены
+            
             time_diff = now - req.request_time
-            if timedelta(hours=1) < time_diff <= timedelta(hours=2):
+            interval_minutes = settings.survey_interval
+            
+            # Напоминание приходит через interval_minutes, но не более 2 интервалов
+            reminder_threshold = timedelta(minutes=interval_minutes)
+            timeout_threshold = timedelta(minutes=interval_minutes * 2)
+            
+            if reminder_threshold < time_diff <= timeout_threshold:
                 try:
                     await bot.send_message(
                         req.user_id,
-                        "Напоминаем: пожалуйста, ответьте на запрос о настроении."
+                        f"⏰ Напоминание: пожалуйста, ответьте на запрос о настроении.\n"
+                        f"(Интервал опросов: {interval_minutes} мин)"
                     )
                 except Exception as e:
                     logger.error(f"Failed to send reminder to user {req.user_id}: {e}")
                     
-            elif time_diff > timedelta(hours=2):
+            elif time_diff > timeout_threshold:
                 success = mark_request_as_unanswered(req.user_id, req.request_time)
                 if success:
                     try:
                         await bot.send_message(
                             req.user_id,
-                            "Мы зафиксировали, что вы не ответили на запрос о настроении."
+                            f"⏱️ Запрос о настроении пропущен (лимит времени: {interval_minutes * 2} мин)."
                         )
                     except Exception as e:
                         logger.error(f"Failed to send timeout message to user {req.user_id}: {e}")
