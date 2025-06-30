@@ -24,6 +24,9 @@ paramiko==3.5.0
 # HTTP requests for Telegram API
 requests==2.32.3
 
+# System monitoring for performance
+psutil==6.1.0
+
 # Date/time utilities
 python-dateutil==2.9.0.post0
 pytz==2024.2
