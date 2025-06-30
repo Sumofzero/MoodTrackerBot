@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 import sqlite3
 from datetime import datetime, timedelta, timezone
 
@@ -517,6 +518,61 @@ async def handle_physical_state(message: Message):
 
 @dp.message(lambda msg: msg.text in ["Запросить аналитику", "📊 Аналитика"])
 async def request_analytics(message: Message):
+    # НОВОЕ: Добавляем информацию о количестве наблюдений при входе в аналитику
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        query = "SELECT * FROM logs WHERE user_id = ?"
+        logs = pd.read_sql_query(query, conn, params=[message.from_user.id])
+        conn.close()
+
+        if not logs.empty:
+            logs['timestamp'] = pd.to_datetime(logs['timestamp'])
+            
+            # Подсчитываем данные за разные периоды
+            df_emotion = logs[logs['event_type'] == 'answer_emotional'].copy()
+            df_physical = logs[logs['event_type'] == 'answer_physical'].copy()
+            df_activities = logs[logs['event_type'] == 'answer_activity'].copy()
+            
+            now = pd.Timestamp.now()
+            last_week = now - pd.Timedelta(days=7)
+            last_month = now - pd.Timedelta(days=30)
+            
+            emotion_total = len(df_emotion)
+            emotion_week = len(df_emotion[df_emotion['timestamp'] >= last_week])
+            emotion_month = len(df_emotion[df_emotion['timestamp'] >= last_month])
+            
+            physical_total = len(df_physical)
+            physical_week = len(df_physical[df_physical['timestamp'] >= last_week])
+            physical_month = len(df_physical[df_physical['timestamp'] >= last_month])
+            
+            activities_total = len(df_activities)
+            activities_week = len(df_activities[df_activities['timestamp'] >= last_week])
+            
+            # Формируем сообщение со статистикой
+            stats_message = (
+                "📊 СТАТИСТИКА ВАШИХ ДАННЫХ:\n\n"
+                f"😊 Эмоциональное состояние:\n"
+                f"   • Всего записей: {emotion_total}\n"
+                f"   • За неделю: {emotion_week}\n"
+                f"   • За месяц: {emotion_month}\n\n"
+                f"💪 Физическое состояние:\n"
+                f"   • Всего записей: {physical_total}\n"
+                f"   • За неделю: {physical_week}\n"
+                f"   • За месяц: {physical_month}\n\n"
+                f"🎯 Активности:\n"
+                f"   • Всего записей: {activities_total}\n"
+                f"   • За неделю: {activities_week}\n\n"
+                "Выберите тип аналитики:"
+            )
+            
+            await message.answer(stats_message)
+        else:
+            await message.answer("📊 Пока нет данных для анализа. Начните записывать настроение и активности!\n\nВыберите тип аналитики:")
+    
+    except Exception as e:
+        logger.error(f"Error getting analytics stats: {e}")
+        await message.answer("📊 Выберите тип аналитики:")
+
     analytics_reply_keyboard = ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="💭 Эмоциональное состояние")],
@@ -665,9 +721,9 @@ async def send_selected_analytics(message: Message):
                 one_time_keyboard=False
             )
             await message.answer(
-                "📊 Расширенная аналитика:\n\n"
+                "📊 РАСШИРЕННАЯ АНАЛИТИКА:\n\n"
                 "🔥 Тепловая карта - настроение по дням недели и часам\n"
-                "📈 Тренды по неделям - еженедельная динамика\n"
+                "📈 Тренды по неделям - еженедельная динамика\n" 
                 "📊 Тренды по месяцам - месячная динамика\n"
                 "⚖️ Сравнение периодов - сравнение временных отрезков",
                 reply_markup=extended_analytics_reply_keyboard
@@ -803,59 +859,137 @@ async def handle_extended_analytics_reply(message: Message):
     await message.answer(f"📊 Генерирую {chart_name}...")
     
     try:
-        # Загружаем данные эмоционального состояния (по умолчанию)
-        conn = sqlite3.connect(DB_PATH)
-        query = """
-            SELECT timestamp, event_type, details
-            FROM logs 
-            WHERE user_id = ? AND event_type IN ('answer_emotional') 
-            ORDER BY timestamp
-        """
-        df = pd.read_sql_query(query, conn, params=(message.from_user.id,))
-        conn.close()
-        
-        if df.empty:
-            await message.answer(
-                f"📊 Пока нет данных для создания графика.\n"
-                f"Собери больше записей!"
-            )
-            return
-        
-        # Преобразуем данные
-        df['timestamp'] = pd.to_datetime(df['timestamp'])
-        mood_map = {
-            "Прекрасное": 10, "Очень хорошее": 9, "Хорошее": 8,
-            "Удовлетворительное": 7, "Нормальное": 6, "Среднее": 5,
-            "Плохое": 4, "Очень плохое": 3, "Ужасное": 2, "Критически плохое": 1
-        }
-        df['score'] = df['details'].map(mood_map)
-        
-        # Проверяем, достаточно ли данных для конкретного типа графика
-        if should_generate_new_charts(df, chart_type):
-            # Генерируем и отправляем график
-            success = generate_and_send_new_charts(
-                BOT_TOKEN, message.from_user.id, df, chart_type, "emotion", logger
-            )
+        if chart_type == "heatmap":
+            # НОВОЕ: Для тепловой карты генерируем ДВЕ карты - эмоциональную и физическую
+            success_count = 0
             
-            if success:
-                await message.answer(f"✅ {chart_name.capitalize()} отправлен!")
+            # Загружаем данные эмоционального состояния
+            conn = sqlite3.connect(DB_PATH)
+            emotion_query = """
+                SELECT timestamp, event_type, details
+                FROM logs 
+                WHERE user_id = ? AND event_type IN ('answer_emotional') 
+                ORDER BY timestamp
+            """
+            df_emotion = pd.read_sql_query(emotion_query, conn, params=(message.from_user.id,))
+            
+            # Загружаем данные физического состояния
+            physical_query = """
+                SELECT timestamp, event_type, details
+                FROM logs 
+                WHERE user_id = ? AND event_type IN ('answer_physical') 
+                ORDER BY timestamp
+            """
+            df_physical = pd.read_sql_query(physical_query, conn, params=(message.from_user.id,))
+            conn.close()
+            
+            # Обрабатываем эмоциональные данные
+            if not df_emotion.empty:
+                df_emotion['timestamp'] = pd.to_datetime(df_emotion['timestamp'])
+                mood_map = {
+                    "Прекрасное": 10, "Очень хорошее": 9, "Хорошее": 8,
+                    "Удовлетворительное": 7, "Нормальное": 6, "Среднее": 5,
+                    "Плохое": 4, "Очень плохое": 3, "Ужасное": 2, "Критически плохое": 1
+                }
+                df_emotion['score'] = df_emotion['details'].replace(mood_map)
+                df_emotion = df_emotion.dropna(subset=['score'])
+                
+                # Проверяем достаточность данных и генерируем карту эмоций
+                if should_generate_new_charts(df_emotion, chart_type):
+                    success = generate_and_send_new_charts(
+                        BOT_TOKEN, message.from_user.id, df_emotion, chart_type, "emotion", logger
+                    )
+                    if success:
+                        success_count += 1
+                        logger.info("😊 Emotion heatmap sent successfully")
+                else:
+                    await message.answer(f"😊 Недостаточно данных эмоций для тепловой карты (нужно 15+ записей, у вас {len(df_emotion)})")
             else:
-                await message.answer(f"❌ Ошибка при генерации графика.\nПопробуйте позже.")
-        else:
-            min_data_requirements = {
-                "heatmap": "10 записей",
-                "weekly_trends": "14 записей (2 недели)",
-                "monthly_trends": "14 записей (2 недели)",
-                "period_comparison": "20 записей"
-            }
+                await message.answer("😊 Нет данных эмоционального состояния для тепловой карты")
             
-            requirement = min_data_requirements.get(chart_type, "больше записей")
-            await message.answer(
-                f"📊 Недостаточно данных для создания графика.\n\n"
-                f"Для графика '{chart_name}' необходимо минимум {requirement}.\n"
-                f"У вас: {len(df)} записей.\n\n"
-                f"Продолжайте заполнять дневник!"
-            )
+            # Обрабатываем данные физического состояния
+            if not df_physical.empty:
+                df_physical['timestamp'] = pd.to_datetime(df_physical['timestamp'])
+                physical_map = {
+                    "Отличное": 5, "Хорошее": 4, "Нормальное": 3, 
+                    "Плохое": 2, "Очень плохое": 1
+                }
+                df_physical['score'] = df_physical['details'].replace(physical_map)
+                df_physical = df_physical.dropna(subset=['score'])
+                
+                # Проверяем достаточность данных и генерируем карту физического состояния
+                if should_generate_new_charts(df_physical, chart_type):
+                    success = generate_and_send_new_charts(
+                        BOT_TOKEN, message.from_user.id, df_physical, chart_type, "physical", logger
+                    )
+                    if success:
+                        success_count += 1
+                        logger.info("💪 Physical heatmap sent successfully")
+                else:
+                    await message.answer(f"💪 Недостаточно данных физического состояния для тепловой карты (нужно 15+ записей, у вас {len(df_physical)})")
+            else:
+                await message.answer("💪 Нет данных физического состояния для тепловой карты")
+            
+            # Итоговое сообщение
+            if success_count > 0:
+                await message.answer(f"✅ Тепловые карты отправлены! ({success_count} из 2 возможных)")
+            else:
+                await message.answer("❌ Не удалось создать ни одной тепловой карты. Добавьте больше данных!")
+        
+        else:
+            # Для остальных типов графиков оставляем старую логику (только эмоции)
+            conn = sqlite3.connect(DB_PATH)
+            query = """
+                SELECT timestamp, event_type, details
+                FROM logs 
+                WHERE user_id = ? AND event_type IN ('answer_emotional') 
+                ORDER BY timestamp
+            """
+            df = pd.read_sql_query(query, conn, params=(message.from_user.id,))
+            conn.close()
+            
+            if df.empty:
+                await message.answer(
+                    f"📊 Пока нет данных для создания графика.\n"
+                    f"Собери больше записей!"
+                )
+                return
+            
+            # Преобразуем данные
+            df['timestamp'] = pd.to_datetime(df['timestamp'])
+            mood_map = {
+                "Прекрасное": 10, "Очень хорошее": 9, "Хорошее": 8,
+                "Удовлетворительное": 7, "Нормальное": 6, "Среднее": 5,
+                "Плохое": 4, "Очень плохое": 3, "Ужасное": 2, "Критически плохое": 1
+            }
+            df['score'] = df['details'].replace(mood_map)
+            
+            # Проверяем, достаточно ли данных для конкретного типа графика
+            if should_generate_new_charts(df, chart_type):
+                # Генерируем и отправляем график
+                success = generate_and_send_new_charts(
+                    BOT_TOKEN, message.from_user.id, df, chart_type, "emotion", logger
+                )
+                
+                if success:
+                    await message.answer(f"✅ {chart_name.capitalize()} отправлен!")
+                else:
+                    await message.answer(f"❌ Ошибка при генерации графика.\nПопробуйте позже.")
+            else:
+                min_data_requirements = {
+                    "heatmap": "15 записей",
+                    "weekly_trends": "14 записей (2 недели)",
+                    "monthly_trends": "14 записей (2 недели)",
+                    "period_comparison": "20 записей"
+                }
+                
+                requirement = min_data_requirements.get(chart_type, "больше записей")
+                await message.answer(
+                    f"📊 Недостаточно данных для создания графика.\n\n"
+                    f"Для графика '{chart_name}' необходимо минимум {requirement}.\n"
+                    f"У вас: {len(df)} записей.\n\n"
+                    f"Продолжайте заполнять дневник!"
+                )
         
         # Показываем главное меню после генерации
         await main_menu_handler(message)
@@ -945,17 +1079,37 @@ async def handle_interval_selection(message: Message):
         # Отменяем все старые jobs опросов для этого пользователя
         cancel_user_survey_jobs(message.from_user.id)
         
-        # Проверяем, нужно ли создать новый job
+        # ИСПРАВЛЕНО: ВСЕГДА создаем новый job с учетом нового интервала
         last_ev = get_last_event(message.from_user.id)
-        if last_ev and should_send_survey(message.from_user.id, last_ev.timestamp.replace(tzinfo=timezone.utc)):
-            # Если пора отправлять опрос - создаем job на ближайшее время (через 1 минуту)
+        if last_ev:
+            # Вычисляем когда должен быть следующий опрос с НОВЫМ интервалом
+            time_since_last = datetime.now(timezone.utc) - last_ev.timestamp.replace(tzinfo=timezone.utc)
+            time_to_next = timedelta(minutes=new_interval) - time_since_last
+            
+            # Если уже пора или скоро пора - отправляем через 1 минуту
+            if time_to_next <= timedelta(minutes=1):
+                next_survey_time = datetime.now(timezone.utc) + timedelta(minutes=1)
+                logger.info(f"Scheduled immediate survey for user {message.from_user.id} after interval change")
+            else:
+                # Иначе планируем с учетом нового интервала
+                next_survey_time = datetime.now(timezone.utc) + time_to_next
+                logger.info(f"Rescheduled survey for user {message.from_user.id} in {time_to_next.total_seconds()/60:.1f} minutes")
+            
             scheduler.add_job(
                 send_activity_request,
                 'date',
-                run_date=datetime.now(timezone.utc) + timedelta(minutes=1),
+                run_date=next_survey_time,
                 args=[message.from_user.id]
             )
-            logger.info(f"Scheduled immediate survey for user {message.from_user.id} after interval change")
+        else:
+            # Если нет последнего события - создаем job на новый интервал
+            scheduler.add_job(
+                send_activity_request,
+                'date',
+                run_date=datetime.now(timezone.utc) + timedelta(minutes=new_interval),
+                args=[message.from_user.id]
+            )
+            logger.info(f"Scheduled first survey for user {message.from_user.id} in {new_interval} minutes")
         
         await message.answer(
             f"✅ Интервал опросов изменен на {message.text}\n"
