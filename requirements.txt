@@ -21,8 +21,8 @@ python-dotenv==1.0.1
 # SSH for backup (if needed)
 paramiko==3.5.0
 
-# HTTP requests for Telegram API
-requests==2.32.3
+# HTTP requests for Telegram API  
+requests>=2.32.4
 
 # System monitoring for performance
 psutil==6.1.0
